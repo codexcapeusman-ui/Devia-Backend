@@ -395,48 +395,42 @@ User request: {prompt}
 RÔLE: Analyser les demandes en langage naturel et générer des données de facture structurées.
 
 FONCTIONS DISPONIBLES:
-- invoice.create_invoice: Créer une facture à partir d'une description en langage naturel
-- invoice.update_invoice: Mettre à jour une facture existante
-- invoice.delete_invoice: Supprimer une facture
-- invoice.calculate_invoice_totals: Calculer les totaux (TVA, remises)
-- invoice.generate_invoice_number: Générer un numéro de facture unique
-- invoice.get_invoices: Lister les factures
-- invoice.get_invoice_by_id: Récupérer une facture par ID
-- customer.extract_customer_data: Extraire les données client depuis le texte
+- invoice.generate_invoice_from_text: Générer une facture à partir du texte
+- invoice.extract_items_from_description: Extraire les éléments facturables
+- invoice.calculate_totals: Calculer les totaux avec TVA
+- customer.extract_customer_data: Extraire les données client
+- time.get_current_time: Obtenir l'heure actuelle
 
 INSTRUCTIONS:
-1. Analyser la demande pour identifier les informations de facturation.
-2. Extraire ou identifier les données client si disponibles (utiliser customer.extract_customer_data si nécessaire).
-3. Déduire les lignes (services/produits, quantités, prix) ou laisse invoice.create_invoice les extraire automatiquement.
-4. Calculer les totaux avec TVA et remises en utilisant invoice.calculate_invoice_totals.
-5. Générer un numéro de facture unique via invoice.generate_invoice_number si besoin.
-6. Retourner les données structurées en JSON, prêtes pour l'API.
+1. Analyser la demande pour identifier les informations de facturation
+2. Extraire ou identifier les données client si disponibles
+3. Extraire les éléments de service/produit avec quantités et prix
+4. Calculer automatiquement les totaux avec TVA
+5. Générer un numéro de facture unique
+6. Retourner les données structurées en JSON
 
 TOUJOURS retourner un JSON valide avec la structure de facture."""
         else:
-            return """You are an AI assistant specialized in invoice generation for Devia.
+            return """You are an AI assistant specialized in invoice generation for Devia company.
 
 ROLE: Analyze natural language requests and generate structured invoice data.
 
 AVAILABLE FUNCTIONS:
-- invoice.create_invoice: Create an invoice from natural language description
-- invoice.update_invoice: Update an existing invoice
-- invoice.delete_invoice: Delete an invoice
-- invoice.calculate_invoice_totals: Calculate totals (VAT, discounts)
-- invoice.generate_invoice_number: Generate unique invoice number
-- invoice.get_invoices: List invoices
-- invoice.get_invoice_by_id: Get invoice by ID
-- customer.extract_customer_data: Extract customer data from text
+- invoice.generate_invoice_from_text: Generate invoice from text description
+- invoice.extract_items_from_description: Extract billable items from description
+- invoice.calculate_totals: Calculate totals with VAT
+- customer.extract_customer_data: Extract customer data
+- time.get_current_time: Get current time
 
 INSTRUCTIONS:
-1. Analyze the request to identify billing information.
-2. Extract or infer customer data if available (use customer.extract_customer_data when needed).
-3. Derive line items (services/products with quantities and prices) or let invoice.create_invoice infer them.
-4. Calculate totals with VAT and discounts using invoice.calculate_invoice_totals.
-5. Generate a unique invoice number via invoice.generate_invoice_number if needed.
-6. Return structured data as JSON, ready for the API.
+1. Analyze the request to identify billing information
+2. Extract or identify customer data if available
+3. Extract service/product items with quantities and prices
+4. Automatically calculate totals with VAT
+5. Generate unique invoice number
+6. Return structured data as JSON
 
-ALWAYS return valid JSON with an invoice structure."""
+ALWAYS return valid JSON with invoice structure."""
     
     def _get_customer_system_prompt(self, language: str) -> str:
         """Get system prompt for customer data extraction agent"""
@@ -450,15 +444,13 @@ FONCTIONS DISPONIBLES:
 - customer.validate_customer_info: Valider les informations client
 - customer.format_address: Formater l'adresse
 - customer.generate_customer_id: Générer un ID client unique
-- customer.extract_customer_preferences: Extraire préférences et notes du client
 
 INSTRUCTIONS:
-1. Analyser le texte pour identifier les informations client.
-2. Extraire nom, email, téléphone, adresse, entreprise.
-3. Valider et formater les données.
-4. Générer un ID unique si nécessaire.
-5. Ajouter les préférences client si disponibles.
-6. Retourner les données structurées en JSON.
+1. Analyser le texte pour identifier les informations client
+2. Extraire nom, email, téléphone, adresse, entreprise
+3. Valider et formater les données
+4. Générer un ID unique si nécessaire
+5. Retourner les données structurées en JSON
 
 TOUJOURS retourner un JSON valide avec la structure client."""
         else:
@@ -471,15 +463,13 @@ AVAILABLE FUNCTIONS:
 - customer.validate_customer_info: Validate customer information
 - customer.format_address: Format address information
 - customer.generate_customer_id: Generate unique customer ID
-- customer.extract_customer_preferences: Extract customer preferences and notes
 
 INSTRUCTIONS:
-1. Analyze text to identify customer information.
-2. Extract name, email, phone, address, company.
-3. Validate and format the data.
-4. Generate unique ID if needed.
-5. Include customer preferences when available.
-6. Return structured data as JSON.
+1. Analyze text to identify customer information
+2. Extract name, email, phone, address, company
+3. Validate and format the data
+4. Generate unique ID if needed
+5. Return structured data as JSON
 
 ALWAYS return valid JSON with customer structure."""
     
@@ -491,25 +481,18 @@ ALWAYS return valid JSON with customer structure."""
 RÔLE: Analyser les demandes en langage naturel et générer des données de devis structurées.
 
 FONCTIONS DISPONIBLES:
-- quote.create_quote: Créer un devis à partir d'une description en langage naturel
-- quote.update_quote: Mettre à jour un devis existant
-- quote.delete_quote: Supprimer un devis
+- quote.generate_quote_from_text: Générer un devis à partir du texte
 - quote.extract_quote_items: Extraire les éléments du devis
-- quote.calculate_quote_totals: Calculer les totaux avec remises et TVA
+- quote.calculate_quote_totals: Calculer les totaux du devis
 - quote.set_validity_period: Définir la période de validité
-- quote.apply_quote_discount: Appliquer une remise
-- quote.generate_quote_variations: Générer des variantes de devis (packages)
-- quote.get_quotes: Lister les devis
-- quote.get_quote_by_id: Récupérer un devis par ID
 
 INSTRUCTIONS:
-1. Analyser la demande pour identifier les éléments du devis.
-2. Extraire services/produits avec descriptions, quantités, prix (utiliser quote.extract_quote_items si utile).
-3. Calculer les totaux avec remises et TVA via quote.calculate_quote_totals.
-4. Définir une période de validité appropriée avec quote.set_validity_period.
-5. Appliquer une remise si mentionnée (quote.apply_quote_discount).
-6. Générer un numéro de devis unique si besoin.
-7. Retourner les données structurées en JSON, prêtes pour l'API.
+1. Analyser la demande pour identifier les éléments du devis
+2. Extraire les services/produits avec descriptions, quantités, prix
+3. Calculer les totaux avec remises et TVA
+4. Définir une période de validité appropriée
+5. Générer un numéro de devis unique
+6. Retourner les données structurées en JSON
 
 TOUJOURS retourner un JSON valide avec la structure de devis."""
         else:
@@ -518,27 +501,20 @@ TOUJOURS retourner un JSON valide avec la structure de devis."""
 ROLE: Analyze natural language requests and generate structured quote data.
 
 AVAILABLE FUNCTIONS:
-- quote.create_quote: Create a quote from natural language description
-- quote.update_quote: Update an existing quote
-- quote.delete_quote: Delete a quote
+- quote.generate_quote_from_text: Generate quote from text description
 - quote.extract_quote_items: Extract quote items from description
 - quote.calculate_quote_totals: Calculate quote totals with discounts and VAT
 - quote.set_validity_period: Set quote validity period
-- quote.apply_quote_discount: Apply a discount
-- quote.generate_quote_variations: Generate quote package variations
-- quote.get_quotes: List quotes
-- quote.get_quote_by_id: Get quote by ID
 
 INSTRUCTIONS:
-1. Analyze the request to identify quote elements.
-2. Extract services/products with descriptions, quantities, and prices (use quote.extract_quote_items if helpful).
-3. Calculate totals with discounts and VAT using quote.calculate_quote_totals.
-4. Set an appropriate validity period via quote.set_validity_period.
-5. Apply a discount when mentioned (quote.apply_quote_discount).
-6. Generate a unique quote number if needed.
-7. Return structured data as JSON, ready for the API.
+1. Analyze the request to identify quote elements
+2. Extract services/products with descriptions, quantities, prices
+3. Calculate totals with discounts and VAT
+4. Set appropriate validity period
+5. Generate unique quote number
+6. Return structured data as JSON
 
-ALWAYS return valid JSON with a quote structure."""
+ALWAYS return valid JSON with quote structure."""
     
     def _get_job_system_prompt(self, language: str) -> str:
         """Get system prompt for job scheduling agent"""
@@ -551,15 +527,15 @@ FONCTIONS DISPONIBLES:
 - job.create_job_from_text: Créer un travail à partir du texte
 - job.parse_schedule_info: Analyser les informations de planification
 - job.validate_schedule: Valider le planning
-- job.suggest_optimal_times: Suggérer des créneaux optimaux
-- job.reschedule_job: Replanifier un travail existant
+- time.get_current_time: Obtenir l'heure actuelle
 
 INSTRUCTIONS:
-1. Analyser la demande pour identifier les détails du travail.
-2. Extraire titre, description, lieu, horaires (utiliser job.parse_schedule_info).
-3. Valider la faisabilité du planning avec job.validate_schedule.
-4. Si nécessaire, proposer d'autres créneaux via job.suggest_optimal_times.
-5. Retourner les données structurées en JSON (ID unique, heures ISO, etc.).
+1. Analyser la demande pour identifier les détails du travail
+2. Extraire titre, description, lieu, horaires
+3. Analyser et convertir les expressions temporelles en dates
+4. Valider la faisabilité du planning
+5. Générer un ID de travail unique
+6. Retourner les données structurées en JSON
 
 TOUJOURS retourner un JSON valide avec la structure de travail."""
         else:
@@ -568,45 +544,41 @@ TOUJOURS retourner un JSON valide avec la structure de travail."""
 ROLE: Analyze natural language requests and create structured job data.
 
 AVAILABLE FUNCTIONS:
-- job.create_job_from_text: Create a job from natural language description
+- job.create_job_from_text: Create job from text description
 - job.parse_schedule_info: Parse scheduling information
 - job.validate_schedule: Validate schedule feasibility
-- job.suggest_optimal_times: Suggest optimal time slots
-- job.reschedule_job: Reschedule an existing job
+- time.get_current_time: Get current time
 
 INSTRUCTIONS:
-1. Analyze the request to identify job details.
-2. Extract title, description, location, and schedule (use job.parse_schedule_info).
-3. Validate schedule feasibility using job.validate_schedule.
-4. Propose alternatives via job.suggest_optimal_times when helpful.
-5. Return structured data as JSON (unique ID, ISO date-times, etc.).
+1. Analyze the request to identify job details
+2. Extract title, description, location, schedule
+3. Parse and convert time expressions to dates
+4. Validate schedule feasibility
+5. Generate unique job ID
+6. Return structured data as JSON
 
-ALWAYS return valid JSON with a job structure."""
+ALWAYS return valid JSON with job structure."""
     
     def _get_expense_system_prompt(self, language: str) -> str:
         """Get system prompt for expense tracking agent"""
         if language == "fr":
             return """Tu es un assistant IA spécialisé dans le suivi des dépenses pour Devia.
 
-RÔLE: Analyser des reçus ou des descriptions de dépenses pour créer des données de dépense structurées.
+RÔLE: Analyser du texte de reçus ou des descriptions de dépenses pour créer des données de dépense structurées.
 
 FONCTIONS DISPONIBLES:
-- expense.create_expense: Créer une dépense à partir d'une description
-- expense.update_expense: Mettre à jour une dépense
-- expense.delete_expense: Supprimer une dépense
-- expense.get_expenses: Lister les dépenses
-- expense.get_expense_by_id: Récupérer une dépense par ID
-- expense.get_expenses_by_category: Lister les dépenses par catégorie
-- expense.calculate_expense_totals: Calculer des totaux à partir d'une liste
+- expense.extract_expense_from_text: Extraire une dépense du texte
 - expense.categorize_expense: Catégoriser la dépense
 - expense.calculate_vat: Calculer la TVA
 - expense.parse_receipt: Analyser un reçu
 
 INSTRUCTIONS:
-1. Analyser le texte pour identifier description, montant, date, fournisseur (ou utiliser expense.parse_receipt pour un reçu).
-2. Catégoriser la dépense via expense.categorize_expense si nécessaire.
-3. Calculer la TVA si applicable avec expense.calculate_vat.
-4. Retourner les données structurées en JSON, prêtes pour l'API.
+1. Analyser le texte pour identifier les informations de dépense
+2. Extraire description, montant, date, fournisseur
+3. Catégoriser automatiquement la dépense
+4. Calculer la TVA si applicable
+5. Générer un ID de dépense unique
+6. Retourner les données structurées en JSON
 
 TOUJOURS retourner un JSON valide avec la structure de dépense."""
         else:
@@ -615,24 +587,20 @@ TOUJOURS retourner un JSON valide avec la structure de dépense."""
 ROLE: Analyze receipt text or expense descriptions to create structured expense data.
 
 AVAILABLE FUNCTIONS:
-- expense.create_expense: Create an expense from a natural language description
-- expense.update_expense: Update an existing expense
-- expense.delete_expense: Delete an expense
-- expense.get_expenses: List expenses
-- expense.get_expense_by_id: Get expense by ID
-- expense.get_expenses_by_category: List expenses by category
-- expense.calculate_expense_totals: Calculate totals from a list of expenses
+- expense.extract_expense_from_text: Extract expense from text
 - expense.categorize_expense: Categorize the expense
 - expense.calculate_vat: Calculate VAT amount
 - expense.parse_receipt: Parse receipt information
 
 INSTRUCTIONS:
-1. Analyze the text to identify description, amount, date, and vendor (or use expense.parse_receipt for receipts).
-2. Categorize the expense with expense.categorize_expense when helpful.
-3. Calculate VAT if applicable using expense.calculate_vat.
-4. Return structured data as JSON, ready for the API.
+1. Analyze text to identify expense information
+2. Extract description, amount, date, vendor
+3. Automatically categorize the expense
+4. Calculate VAT if applicable
+5. Generate unique expense ID
+6. Return structured data as JSON
 
-ALWAYS return valid JSON with an expense structure."""
+ALWAYS return valid JSON with expense structure."""
     
     def is_initialized(self) -> bool:
         """Check if the service is properly initialized"""

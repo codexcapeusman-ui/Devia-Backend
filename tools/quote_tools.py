@@ -1,6 +1,6 @@
 """
-Quote management tools for Semantic Kernel
-These tools handle quote generation, modification, and conversion
+Quote generation tools for Semantic Kernel
+These tools handle quote creation, item extraction, and calculations
 """
 
 from semantic_kernel.functions import kernel_function
@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
 from config.settings import Settings
-from models import Quote, QuoteItem, Client, QuoteStatus, ItemType
+from models.quotes import Quote, QuoteItem, QuoteStatus, QuoteItemType
 
 class QuoteTools:
     """
@@ -27,27 +27,709 @@ class QuoteTools:
         self.default_vat_rate = settings.default_vat_rate
         self.company_name = settings.company_name
         self.currency = settings.default_currency
-    
+
+    # ===== CREATE/UPDATE/DELETE TOOLS (Return structured responses for frontend verification) =====
+
     @kernel_function(
-        description="Generate a complete quote from natural language text description",
-        name="generate_quote_from_text"
+        description="Create a new quote from natural language description",
+        name="create_quote"
     )
-    def generate_quote_from_text(self, description: str, client_id: Optional[str] = None, validity_days: int = 30) -> str:
+    def create_quote(self, description: str) -> str:
         """
-        Generate a complete quote from text description
+        Create a new quote from text description
         
         Args:
             description: Natural language description of the quote
-            client_id: Optional client ID if known
-            validity_days: Number of days the quote remains valid (default: 30)
             
         Returns:
-            JSON string containing the generated quote data
-            
-        Example:
-            Input: "Quote for website redesign including 3 pages, logo design, and 6 months hosting for ABC Company"
-            Output: JSON with complete quote structure
+            JSON string for frontend verification before API call
         """
+        try:
+            # Extract quote items from description
+            items = self._extract_items_from_description(description)
+            
+            # Extract client information
+            client_data = self._extract_client_from_description(description)
+            
+            # Calculate totals
+            subtotal = sum(item["total"] for item in items)
+            discount = self._extract_discount_from_description(description)
+            vat_rate = self._extract_vat_rate_from_description(description) or self.default_vat_rate
+            vat_amount = (subtotal - discount) * (vat_rate / 100)
+            total = subtotal - discount + vat_amount
+            
+            # Generate quote number
+            quote_number = self._generate_quote_number()
+            
+            # Extract valid until date
+            valid_until = self._extract_valid_until_from_description(description)
+            
+            # Create response matching API format
+            response = {
+                "action": "create_quote",
+                "endpoint": "/api/quotes/",
+                "method": "POST",
+                "data": {
+                    "clientId": client_data.get("id", str(uuid.uuid4())),
+                    "number": quote_number,
+                    "items": [
+                        {
+                            "id": item["id"],
+                            "description": item["description"],
+                            "quantity": item["quantity"],
+                            "unitPrice": item["unit_price"],
+                            "total": item["total"],
+                            "type": item["type"]
+                        } for item in items
+                    ],
+                    "discount": round(discount, 2),
+                    "vatRate": vat_rate,
+                    "validUntil": valid_until.isoformat() if valid_until else (datetime.now() + timedelta(days=30)).isoformat(),
+                    "notes": self._extract_notes_from_description(description)
+                },
+                "preview": {
+                    "quote": {
+                        "id": str(uuid.uuid4()),
+                        "clientId": client_data.get("id", str(uuid.uuid4())),
+                        "number": quote_number,
+                        "items": [
+                            {
+                                "id": item["id"],
+                                "description": item["description"],
+                                "quantity": item["quantity"],
+                                "unitPrice": item["unit_price"],
+                                "total": item["total"],
+                                "type": item["type"]
+                            } for item in items
+                        ],
+                        "subtotal": round(subtotal, 2),
+                        "discount": round(discount, 2),
+                        "vatRate": vat_rate,
+                        "vatAmount": round(vat_amount, 2),
+                        "total": round(total, 2),
+                        "status": "draft",
+                        "validUntil": valid_until.isoformat() if valid_until else (datetime.now() + timedelta(days=30)).isoformat(),
+                        "notes": self._extract_notes_from_description(description),
+                        "createdAt": datetime.now().isoformat(),
+                        "updatedAt": datetime.now().isoformat()
+                    }
+                }
+            }
+            
+            return json.dumps(response, indent=2)
+            
+        except Exception as e:
+            return json.dumps({"error": f"Failed to create quote: {str(e)}"})
+
+    @kernel_function(
+        description="Update an existing quote",
+        name="update_quote"
+    )
+    def update_quote(self, quote_id: str, description: str) -> str:
+        """
+        Update an existing quote based on description
+        
+        Args:
+            quote_id: ID of the quote to update
+            description: Natural language description of changes
+            
+        Returns:
+            JSON string for frontend verification before API call
+        """
+        try:
+            # Parse what needs to be updated from description
+            update_data = {}
+            
+            # Check for status changes
+            status_keywords = {
+                "draft": ["draft"],
+                "sent": ["send", "sent", "email", "mail"],
+                "accepted": ["accept", "accepted", "approve", "approved"],
+                "rejected": ["reject", "rejected", "decline", "declined"],
+                "expired": ["expire", "expired", "expire"]
+            }
+            
+            for status, keywords in status_keywords.items():
+                if any(keyword in description.lower() for keyword in keywords):
+                    update_data["status"] = status
+                    break
+            
+            # Check for new items
+            items = self._extract_items_from_description(description)
+            if items:
+                update_data["items"] = [
+                    {
+                        "id": item["id"],
+                        "description": item["description"],
+                        "quantity": item["quantity"],
+                        "unitPrice": item["unit_price"],
+                        "total": item["total"],
+                        "type": item["type"]
+                    } for item in items
+                ]
+            
+            # Check for discount changes
+            discount = self._extract_discount_from_description(description)
+            if discount > 0:
+                update_data["discount"] = discount
+            
+            # Check for VAT rate changes
+            vat_rate = self._extract_vat_rate_from_description(description)
+            if vat_rate:
+                update_data["vatRate"] = vat_rate
+            
+            # Check for valid until date changes
+            valid_until = self._extract_valid_until_from_description(description)
+            if valid_until:
+                update_data["validUntil"] = valid_until.isoformat()
+            
+            # Check for notes
+            notes = self._extract_notes_from_description(description)
+            if notes:
+                update_data["notes"] = notes
+            
+            # Check for quote number changes
+            number = self._extract_quote_number_from_description(description)
+            if number:
+                update_data["number"] = number
+            
+            # Calculate preview totals if items changed
+            preview_totals = {}
+            if "items" in update_data:
+                subtotal = sum(item["total"] for item in items)
+                discount_amount = update_data.get("discount", 0)
+                vat_rate_value = update_data.get("vatRate", self.default_vat_rate)
+                vat_amount = (subtotal - discount_amount) * (vat_rate_value / 100)
+                total = subtotal - discount_amount + vat_amount
+                
+                preview_totals = {
+                    "subtotal": round(subtotal, 2),
+                    "discount": round(discount_amount, 2),
+                    "vatRate": vat_rate_value,
+                    "vatAmount": round(vat_amount, 2),
+                    "total": round(total, 2)
+                }
+            
+            response = {
+                "action": "update_quote",
+                "endpoint": f"/api/quotes/{quote_id}",
+                "method": "PUT",
+                "data": update_data,
+                "preview": {
+                    "quote": {
+                        "id": quote_id,
+                        **update_data,
+                        **preview_totals,
+                        "updatedAt": datetime.now().isoformat()
+                    }
+                }
+            }
+            
+            return json.dumps(response, indent=2)
+            
+        except Exception as e:
+            return json.dumps({"error": f"Failed to update quote: {str(e)}"})
+
+    @kernel_function(
+        description="Delete a quote by ID",
+        name="delete_quote"
+    )
+    def delete_quote(self, quote_id: str, description: str = "") -> str:
+        """
+        Delete a quote by ID
+        
+        Args:
+            quote_id: ID of the quote to delete
+            description: Optional reason for deletion
+            
+        Returns:
+            JSON string for frontend verification before API call
+        """
+        try:
+            response = {
+                "action": "delete_quote",
+                "endpoint": f"/api/quotes/{quote_id}",
+                "method": "DELETE",
+                "data": {},
+                "preview": {
+                    "message": "Quote will be permanently deleted",
+                    "quote_id": quote_id,
+                    "reason": description if description else "User requested deletion"
+                }
+            }
+            
+            return json.dumps(response, indent=2)
+            
+        except Exception as e:
+            return json.dumps({"error": f"Failed to prepare quote deletion: {str(e)}"})
+
+    # ===== GET TOOLS (Actually fetch data from database) =====
+
+    @kernel_function(
+        description="Get all quotes with optional filtering and search",
+        name="get_quotes"
+    )
+    async def get_quotes(self, search: str = "", status_filter: str = "", client_id: str = "", skip: int = 0, limit: int = 100) -> str:
+        """
+        Retrieve a list of quotes with optional filtering
+        
+        Args:
+            search: Optional search text to filter by quote number or client ID
+            status_filter: Filter by status: draft, sent, accepted, rejected, expired
+            client_id: Filter by client ID
+            skip: Number of quotes to skip
+            limit: Maximum number of quotes to return
+            
+        Returns:
+            JSON string containing the list of quotes
+        """
+        try:
+            from database import get_quotes_collection
+            from bson import ObjectId
+            
+            quotes_collection = get_quotes_collection()
+            query_dict = {}
+
+            # Add search filter
+            if search:
+                import re
+                regex = re.compile(re.escape(search), re.IGNORECASE)
+                query_dict["$or"] = [
+                    {"number": {"$regex": regex}},
+                    {"clientId": {"$regex": regex}}
+                ]
+
+            # Add status filter
+            if status_filter:
+                valid_statuses = ["draft", "sent", "accepted", "rejected", "expired"]
+                if status_filter not in valid_statuses:
+                    return json.dumps({"error": f"Invalid status filter: {status_filter}"})
+                query_dict["status"] = status_filter
+
+            # Add client ID filter
+            if client_id:
+                query_dict["clientId"] = client_id
+
+            # Get total count
+            total = await quotes_collection.count_documents(query_dict)
+
+            # Get quotes with pagination
+            quotes_cursor = quotes_collection.find(query_dict).skip(skip).limit(limit).sort("createdAt", -1)
+            quotes = []
+            async for quote_doc in quotes_cursor:
+                # Convert to response format
+                quote_response = {
+                    "id": str(quote_doc["_id"]),
+                    "clientId": quote_doc.get("clientId", ""),
+                    "number": quote_doc.get("number", ""),
+                    "items": quote_doc.get("items", []),
+                    "subtotal": quote_doc.get("subtotal", 0.0),
+                    "discount": quote_doc.get("discount", 0.0),
+                    "vatRate": quote_doc.get("vatRate", 20.0),
+                    "vatAmount": quote_doc.get("vatAmount", 0.0),
+                    "total": quote_doc.get("total", 0.0),
+                    "status": quote_doc.get("status", "draft"),
+                    "validUntil": quote_doc.get("validUntil", "").isoformat() if isinstance(quote_doc.get("validUntil"), datetime) else quote_doc.get("validUntil", ""),
+                    "notes": quote_doc.get("notes"),
+                    "createdAt": quote_doc.get("createdAt", "").isoformat() if isinstance(quote_doc.get("createdAt"), datetime) else quote_doc.get("createdAt", ""),
+                    "updatedAt": quote_doc.get("updatedAt", "").isoformat() if isinstance(quote_doc.get("updatedAt"), datetime) else quote_doc.get("updatedAt", "")
+                }
+                quotes.append(quote_response)
+
+            response = {
+                "quotes": quotes,
+                "total": total
+            }
+            
+            return json.dumps(response, indent=2)
+            
+        except Exception as e:
+            return json.dumps({"error": f"Failed to get quotes: {str(e)}"})
+
+    @kernel_function(
+        description="Get a specific quote by ID",
+        name="get_quote_by_id"
+    )
+    async def get_quote_by_id(self, quote_id: str) -> str:
+        """
+        Retrieve a specific quote by ID
+        
+        Args:
+            quote_id: Quote ID to retrieve
+            
+        Returns:
+            JSON string containing the quote details
+        """
+        try:
+            from database import get_quotes_collection
+            from bson import ObjectId
+            
+            quotes_collection = get_quotes_collection()
+
+            try:
+                quote_doc = await quotes_collection.find_one({"_id": ObjectId(quote_id)})
+            except:
+                return json.dumps({"error": "Invalid quote ID format"})
+
+            if not quote_doc:
+                return json.dumps({"error": "Quote not found"})
+
+            # Convert to response format
+            quote_response = {
+                "id": str(quote_doc["_id"]),
+                "clientId": quote_doc.get("clientId", ""),
+                "number": quote_doc.get("number", ""),
+                "items": quote_doc.get("items", []),
+                "subtotal": quote_doc.get("subtotal", 0.0),
+                "discount": quote_doc.get("discount", 0.0),
+                "vatRate": quote_doc.get("vatRate", 20.0),
+                "vatAmount": quote_doc.get("vatAmount", 0.0),
+                "total": quote_doc.get("total", 0.0),
+                "status": quote_doc.get("status", "draft"),
+                "validUntil": quote_doc.get("validUntil", "").isoformat() if isinstance(quote_doc.get("validUntil"), datetime) else quote_doc.get("validUntil", ""),
+                "notes": quote_doc.get("notes"),
+                "createdAt": quote_doc.get("createdAt", "").isoformat() if isinstance(quote_doc.get("createdAt"), datetime) else quote_doc.get("createdAt", ""),
+                "updatedAt": quote_doc.get("updatedAt", "").isoformat() if isinstance(quote_doc.get("updatedAt"), datetime) else quote_doc.get("updatedAt", "")
+            }
+
+            response = {
+                "quote": quote_response
+            }
+            
+            return json.dumps(response, indent=2)
+            
+        except Exception as e:
+            return json.dumps({"error": f"Failed to get quote: {str(e)}"})
+
+    @kernel_function(
+        description="Calculate quote totals with VAT, discounts, and final amount",
+        name="calculate_quote_totals"
+    )
+    def calculate_quote_totals(self, items_json: str, discount: float = 0.0, vat_rate: float = 20.0) -> str:
+        """
+        Calculate totals for quote items with VAT and discounts
+        
+        Args:
+            items_json: JSON string containing array of items with quantities and prices
+            discount: Discount amount to apply
+            vat_rate: VAT rate to use (defaults to company default)
+            
+        Returns:
+            JSON string containing calculated totals
+        """
+        try:
+            items = json.loads(items_json)
+            if not isinstance(items, list):
+                raise ValueError("Items must be an array")
+            
+            # Calculate subtotal from item totals
+            subtotal = sum(float(item.get("total", 0)) for item in items)
+            
+            # Apply discount
+            subtotal_after_discount = subtotal - discount
+            
+            # Calculate VAT
+            vat_amount = subtotal_after_discount * (vat_rate / 100)
+            
+            # Calculate total
+            total = subtotal_after_discount + vat_amount
+            
+            result = {
+                "subtotal": round(subtotal, 2),
+                "vatAmount": round(vat_amount, 2),
+                "total": round(total, 2),
+                "discount": round(discount, 2),
+                "vatRate": vat_rate,
+                "currency": self.currency
+            }
+            
+            return json.dumps(result, indent=2)
+            
+        except Exception as e:
+            return json.dumps({"error": f"Failed to calculate totals: {str(e)}"})
+
+    # ===== HELPER METHODS =====
+
+    def _extract_valid_until_from_description(self, description: str) -> Optional[datetime]:
+        """
+        Extract valid until date from description
+        """
+        # Pattern for valid until dates
+        date_patterns = [
+            r'(?:valid until|expires on|expire on)[:\s]*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})',
+            r'(?:valid until|expires on|expire on)[:\s]*(\d{1,2}\s+\w+\s+\d{2,4})',
+            r'valid for\s+(\d+)\s+days?',
+            r'(\d+)\s+days?\s+validity'
+        ]
+        
+        for pattern in date_patterns:
+            match = re.search(pattern, description, re.IGNORECASE)
+            if match:
+                try:
+                    date_str = match.group(1)
+                    if 'days' in pattern:
+                        # Handle relative dates
+                        days = int(date_str)
+                        return datetime.now() + timedelta(days=days)
+                    else:
+                        # Handle absolute dates (simplified parsing)
+                        if '/' in date_str or '-' in date_str:
+                            # Try common date formats
+                            for fmt in ['%d/%m/%Y', '%m/%d/%Y', '%d-%m-%Y', '%m-%d-%Y']:
+                                try:
+                                    return datetime.strptime(date_str, fmt)
+                                except ValueError:
+                                    continue
+                except (ValueError, IndexError):
+                    continue
+        
+        return None
+
+    def _extract_quote_number_from_description(self, description: str) -> Optional[str]:
+        """
+        Extract quote number from description
+        """
+        # Pattern for quote numbers
+        number_patterns = [
+            r'(?:quote|devis)[:\s#]*([A-Z0-9-]+)',
+            r'(?:number|num|no)[:\s#]*([A-Z0-9-]+)',
+            r'#([A-Z0-9-]+)'
+        ]
+        
+        for pattern in number_patterns:
+            match = re.search(pattern, description, re.IGNORECASE)
+            if match:
+                return match.group(1).upper()
+        
+        return None
+
+    def _extract_vat_rate_from_description(self, description: str) -> Optional[float]:
+        """
+        Extract VAT rate from description
+        """
+        # Pattern for VAT rates
+        vat_patterns = [
+            r'(?:vat|tax)[:\s]*(\d+(?:\.\d+)?)%?',
+            r'(\d+(?:\.\d+)?)%?\s*(?:vat|tax)',
+            r'tva[:\s]*(\d+(?:\.\d+)?)%?'  # French VAT
+        ]
+        
+        for pattern in vat_patterns:
+            match = re.search(pattern, description, re.IGNORECASE)
+            if match:
+                rate = float(match.group(1))
+                return rate if rate <= 100 else rate / 100  # Handle percentage formats
+        
+        return None
+
+    def _extract_discount_from_description(self, description: str) -> float:
+        """
+        Extract discount amount from description
+        """
+        # Pattern for discount amounts
+        discount_patterns = [
+            r'discount[:\s]*[€$£]?(\d+(?:\.\d+)?)',
+            r'(?:less|minus)[:\s]*[€$£]?(\d+(?:\.\d+)?)',
+            r'[€$£]?(\d+(?:\.\d+)?)\s*(?:discount|off)'
+        ]
+        
+        for pattern in discount_patterns:
+            match = re.search(pattern, description, re.IGNORECASE)
+            if match:
+                return float(match.group(1))
+        
+        return 0.0
+
+    def _extract_notes_from_description(self, description: str) -> str:
+        """
+        Extract notes or additional information from description
+        """
+        # Look for note indicators
+        note_patterns = [
+            r'(?:note|notes|comment|comments)[:\s]*([^,\.;]+)',
+            r'(?:additional|extra|special)[:\s]*([^,\.;]+)'
+        ]
+        
+        for pattern in note_patterns:
+            match = re.search(pattern, description, re.IGNORECASE)
+            if match:
+                return match.group(1).strip()
+        
+        return ""
+
+    def _generate_quote_number(self) -> str:
+        """
+        Generate a unique quote number
+        """
+        current_year = datetime.now().year
+        timestamp_suffix = int(datetime.now().timestamp()) % 10000
+        return f"DEV-{current_year}-{timestamp_suffix:04d}"
+
+    def _extract_items_from_description(self, description: str) -> List[Dict[str, Any]]:
+        """
+        Internal method to extract items from description using regex patterns
+        """
+        items = []
+        
+        # Common patterns for items with quantities and prices
+        patterns = [
+            # Pattern: "40 hours at €50/hour" or "40h at €50/h"
+            r'(\d+(?:\.\d+)?)\s*(?:hours?|hrs?|h)\s*(?:at|@)\s*[€$£]?(\d+(?:\.\d+)?)(?:/hour|/hr|/h)?',
+            # Pattern: "kitchen renovation €12000" or "renovation €200"
+            r'([^,\.;]+?)\s*[€$£](\d+(?:\.\d+)?)',
+            # Pattern: "3 x consulting sessions at €150 each"
+            r'(\d+)\s*x?\s*([^@]+?)\s*(?:at|@)\s*[€$£]?(\d+(?:\.\d+)?)(?:\s*each)?',
+            # Pattern: "renovation work for €15000"
+            r'([^,\.;]+?)\s*for\s*[€$£](\d+(?:\.\d+)?)'
+        ]
+        
+        item_id = 1
+        
+        for pattern in patterns:
+            matches = re.finditer(pattern, description, re.IGNORECASE)
+            for match in matches:
+                try:
+                    if len(match.groups()) == 2:
+                        # Simple item with description and price
+                        if match.group(1).replace('.', '').replace(',', '').isdigit():
+                            # First group is quantity, need to find description
+                            quantity = float(match.group(1))
+                            unit_price = float(match.group(2))
+                            description_part = "Service"  # Default description
+                        else:
+                            # First group is description
+                            description_part = match.group(1).strip()
+                            quantity = 1.0
+                            unit_price = float(match.group(2))
+                    
+                    elif len(match.groups()) == 3:
+                        # Item with quantity, description, and price
+                        if match.group(1).replace('.', '').replace(',', '').isdigit():
+                            quantity = float(match.group(1))
+                            description_part = match.group(2).strip()
+                            unit_price = float(match.group(3))
+                        else:
+                            # Hour-based pattern
+                            quantity = float(match.group(1))
+                            unit_price = float(match.group(2))
+                            description_part = "Hourly service"
+                    
+                    else:
+                        continue
+                    
+                    # Clean up description
+                    description_part = description_part.strip(' -.,;:')
+                    if not description_part:
+                        description_part = "Service"
+                    
+                    # Calculate total
+                    total = quantity * unit_price
+                    
+                    # Determine item type based on description
+                    item_type = "job"  # Default for quotes
+                    if any(word in description_part.lower() for word in ["material", "product", "equipment", "hardware"]):
+                        item_type = "material"
+                    elif any(word in description_part.lower() for word in ["hour", "labor", "work"]):
+                        item_type = "labor"
+                    
+                    item = {
+                        "id": str(item_id),
+                        "description": description_part.title(),
+                        "quantity": quantity,
+                        "unit_price": unit_price,
+                        "total": round(total, 2),
+                        "type": item_type
+                    }
+                    
+                    items.append(item)
+                    item_id += 1
+                    
+                except (ValueError, IndexError):
+                    continue
+        
+        # If no items found, try to extract a simple total amount
+        if not items:
+            total_pattern = r'total[:\s]*[€$£]?(\d+(?:\.\d+)?)'
+            total_match = re.search(total_pattern, description, re.IGNORECASE)
+            if total_match:
+                total_amount = float(total_match.group(1))
+                items.append({
+                    "id": "1",
+                    "description": "Quote Item",
+                    "quantity": 1.0,
+                    "unit_price": total_amount,
+                    "total": total_amount,
+                    "type": "job"
+                })
+        
+        return items
+
+    def _extract_client_from_description(self, description: str) -> Dict[str, Any]:
+        """
+        Extract client information from description
+        """
+        client_data = {
+            "id": str(uuid.uuid4()),
+            "name": "",
+            "email": "",
+            "phone": "",
+            "address": "",
+            "company": "",
+            "balance": 0.0,
+            "status": "active",
+            "notes": "",
+            "created_at": datetime.now().isoformat()
+        }
+        
+        # Extract name patterns
+        name_patterns = [
+            r'(?:for|to|client)\s+([A-Z][a-z]+\s+[A-Z][a-z]+)',
+            r'([A-Z][a-z]+\s+[A-Z][a-z]+)(?:\s+at|\s+from)',
+        ]
+        
+        for pattern in name_patterns:
+            match = re.search(pattern, description)
+            if match:
+                client_data["name"] = match.group(1).strip()
+                break
+        
+        # Extract email
+        email_pattern = r'([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})'
+        email_match = re.search(email_pattern, description)
+        if email_match:
+            client_data["email"] = email_match.group(1)
+        
+        # Extract phone
+        phone_pattern = r'(?:phone|tel|mobile)[:\s]*([+\d\s\-\(\)]+)'
+        phone_match = re.search(phone_pattern, description, re.IGNORECASE)
+        if phone_match:
+            client_data["phone"] = phone_match.group(1).strip()
+        
+        # Extract address
+        address_patterns = [
+            r'(?:at|address)[:\s]*([^,\.;]+(?:street|st|avenue|ave|road|rd|drive|dr)[^,\.;]*)',
+            r'(\d+\s+[^,\.;]+(?:street|st|avenue|ave|road|rd|drive|dr)[^,\.;]*)'
+        ]
+        
+        for pattern in address_patterns:
+            address_match = re.search(pattern, description, re.IGNORECASE)
+            if address_match:
+                client_data["address"] = address_match.group(1).strip()
+                break
+        
+        # Extract company
+        company_patterns = [
+            r'(?:company|corp|inc|ltd|llc)[:\s]*([^,\.;]+)',
+            r'([^,\.;]+(?:company|corp|inc|ltd|llc))'
+        ]
+        
+        for pattern in company_patterns:
+            company_match = re.search(pattern, description, re.IGNORECASE)
+            if company_match:
+                client_data["company"] = company_match.group(1).strip()
+                break
+        
+        return client_data
         try:
             # Extract quote items from description
             items = self._extract_quote_items_from_description(description)

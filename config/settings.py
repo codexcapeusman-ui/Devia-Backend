@@ -18,6 +18,10 @@ class Settings(BaseSettings):
     app_port: int = 8000
     debug: bool = True
     
+    # Database Configuration
+    database_url: str = "mongodb://mongo:sBfYimepFGfjmbhWZkuiyqztWUJvZwTb@gondola.proxy.rlwy.net:57000"
+    database_name: str = "devai"
+    
     # Semantic Kernel Configuration
     sk_log_level: str = "INFO"
     

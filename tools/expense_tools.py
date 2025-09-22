@@ -1,6 +1,6 @@
 """
-Expense tracking tools for Semantic Kernel
-These tools handle expense tracking, categorization, and VAT calculations
+Expense management tools for Semantic Kernel
+These tools handle expense creation, modification, and data retrieval
 """
 
 from semantic_kernel.functions import kernel_function
@@ -13,12 +13,12 @@ from datetime import datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
 from config.settings import Settings
-from models import Expense
+from models.expenses import Expense, ExpenseCreate, ExpenseUpdate, ExpenseResponse, ExpenseCategory
 
 class ExpenseTools:
     """
-    Semantic Kernel tools for expense tracking and management
-    Provides AI-powered expense extraction from receipts and descriptions
+    Semantic Kernel tools for expense management
+    Provides AI-powered expense creation and management from natural language prompts
     """
     
     def __init__(self, settings: Settings):
@@ -26,27 +26,568 @@ class ExpenseTools:
         self.settings = settings
         self.default_vat_rate = settings.default_vat_rate
         self.currency = settings.default_currency
-        
-        # Common expense categories
-        self.expense_categories = {
-            "office": ["office", "supplies", "stationery", "paper", "pen", "pencil", "notebook"],
-            "travel": ["travel", "transport", "taxi", "uber", "flight", "train", "hotel", "accommodation"],
-            "meals": ["meal", "lunch", "dinner", "breakfast", "restaurant", "food", "coffee"],
-            "technology": ["computer", "laptop", "software", "hardware", "phone", "internet", "hosting"],
-            "marketing": ["advertising", "marketing", "promotion", "website", "seo", "social media"],
-            "utilities": ["electricity", "gas", "water", "phone bill", "internet bill", "utility"],
-            "insurance": ["insurance", "liability", "coverage", "premium"],
-            "professional": ["consultant", "legal", "accounting", "professional", "advisor"],
-            "equipment": ["equipment", "tool", "machinery", "vehicle", "furniture"],
-            "training": ["training", "course", "education", "seminar", "workshop", "certification"],
-            "miscellaneous": ["misc", "other", "various", "general"]
-        }
-    
+
+    # ===== CREATE/UPDATE/DELETE TOOLS (Return structured responses for frontend verification) =====
+
     @kernel_function(
-        description="Extract expense information from receipt text or description",
-        name="extract_expense_from_text"
+        description="Create a new expense from natural language description",
+        name="create_expense"
     )
-    def extract_expense_from_text(self, text: str, receipt_date: Optional[str] = None) -> str:
+    def create_expense(self, description: str) -> str:
+        """
+        Create a new expense from text description
+        
+        Args:
+            description: Natural language description of the expense
+            
+        Returns:
+            JSON string for frontend verification before API call
+        """
+        try:
+            # Extract expense information from description
+            expense_data = self._extract_expense_from_description(description)
+            
+            # Calculate VAT amount
+            vat_amount = expense_data["amount"] * (expense_data["vat_rate"] / 100)
+            
+            # Create response matching API format
+            response = {
+                "action": "create_expense",
+                "endpoint": "/api/expenses/",
+                "method": "POST",
+                "data": {
+                    "description": expense_data["description"],
+                    "amount": expense_data["amount"],
+                    "vat_rate": expense_data["vat_rate"],
+                    "category": expense_data["category"],
+                    "date": expense_data["date"].isoformat(),
+                    "notes": expense_data.get("notes"),
+                    "receipt_url": expense_data.get("receipt_url")
+                },
+                "preview": {
+                    "expense": {
+                        "id": str(uuid.uuid4()),
+                        "description": expense_data["description"],
+                        "amount": expense_data["amount"],
+                        "vat_amount": round(vat_amount, 2),
+                        "vat_rate": expense_data["vat_rate"],
+                        "category": expense_data["category"],
+                        "date": expense_data["date"].isoformat(),
+                        "notes": expense_data.get("notes"),
+                        "receipt_url": expense_data.get("receipt_url"),
+                        "created_at": datetime.now().isoformat(),
+                        "updated_at": datetime.now().isoformat()
+                    }
+                }
+            }
+            
+            return json.dumps(response, indent=2)
+            
+        except Exception as e:
+            return json.dumps({"error": f"Failed to create expense: {str(e)}"})
+
+    @kernel_function(
+        description="Update an existing expense",
+        name="update_expense"
+    )
+    def update_expense(self, expense_id: str, description: str) -> str:
+        """
+        Update an existing expense based on description
+        
+        Args:
+            expense_id: ID of the expense to update
+            description: Natural language description of changes
+            
+        Returns:
+            JSON string for frontend verification before API call
+        """
+        try:
+            # Parse what needs to be updated from description
+            update_data = {}
+            
+            # Extract expense information from description
+            expense_info = self._extract_expense_from_description(description)
+            
+            # Only include fields that have actual values
+            for field, value in expense_info.items():
+                if value is not None and str(value).strip():
+                    update_data[field] = value
+            
+            # Convert datetime to ISO string for JSON serialization
+            if "date" in update_data and isinstance(update_data["date"], datetime):
+                update_data["date"] = update_data["date"].isoformat()
+            
+            # Calculate preview VAT if amount or rate changed
+            preview_totals = {}
+            if "amount" in update_data or "vat_rate" in update_data:
+                amount = update_data.get("amount", 0)
+                vat_rate = update_data.get("vat_rate", self.default_vat_rate)
+                vat_amount = amount * (vat_rate / 100)
+                preview_totals = {
+                    "vat_amount": round(vat_amount, 2)
+                }
+            
+            response = {
+                "action": "update_expense",
+                "endpoint": f"/api/expenses/{expense_id}",
+                "method": "PUT",
+                "data": update_data,
+                "preview": {
+                    "expense": {
+                        "id": expense_id,
+                        **update_data,
+                        **preview_totals,
+                        "updated_at": datetime.now().isoformat()
+                    }
+                }
+            }
+            
+            return json.dumps(response, indent=2)
+            
+        except Exception as e:
+            return json.dumps({"error": f"Failed to update expense: {str(e)}"})
+
+    @kernel_function(
+        description="Delete an expense by ID",
+        name="delete_expense"
+    )
+    def delete_expense(self, expense_id: str, description: str = "") -> str:
+        """
+        Delete an expense by ID
+        
+        Args:
+            expense_id: ID of the expense to delete
+            description: Optional reason for deletion
+            
+        Returns:
+            JSON string for frontend verification before API call
+        """
+        try:
+            response = {
+                "action": "delete_expense",
+                "endpoint": f"/api/expenses/{expense_id}",
+                "method": "DELETE",
+                "data": {},
+                "preview": {
+                    "message": "Expense will be permanently deleted",
+                    "expense_id": expense_id,
+                    "reason": description if description else "User requested deletion"
+                }
+            }
+            
+            return json.dumps(response, indent=2)
+            
+        except Exception as e:
+            return json.dumps({"error": f"Failed to prepare expense deletion: {str(e)}"})
+
+    # ===== GET TOOLS (Actually fetch data from database) =====
+
+    @kernel_function(
+        description="Get all expenses with optional filtering and search",
+        name="get_expenses"
+    )
+    async def get_expenses(self, search: str = "", category_filter: str = "", start_date: str = "", end_date: str = "", skip: int = 0, limit: int = 100) -> str:
+        """
+        Retrieve a list of expenses with optional filtering
+        
+        Args:
+            search: Optional search text to filter by description
+            category_filter: Filter by category (Materials, Transport, Equipment, etc.)
+            start_date: Filter expenses from this date (YYYY-MM-DD format)
+            end_date: Filter expenses until this date (YYYY-MM-DD format)
+            skip: Number of expenses to skip
+            limit: Maximum number of expenses to return
+            
+        Returns:
+            JSON string containing the list of expenses
+        """
+        try:
+            from database import get_expenses_collection
+            from bson import ObjectId
+            
+            expenses_collection = get_expenses_collection()
+            query_dict = {}
+
+            # Add search filter
+            if search:
+                import re
+                regex = re.compile(re.escape(search), re.IGNORECASE)
+                query_dict["description"] = {"$regex": regex}
+
+            # Add category filter
+            if category_filter:
+                valid_categories = [category.value for category in ExpenseCategory]
+                if category_filter not in valid_categories:
+                    return json.dumps({"error": f"Invalid category filter: {category_filter}"})
+                query_dict["category"] = category_filter
+
+            # Add date range filter
+            if start_date or end_date:
+                date_filter = {}
+                if start_date:
+                    try:
+                        start_dt = datetime.fromisoformat(start_date)
+                        date_filter["$gte"] = start_dt
+                    except ValueError:
+                        return json.dumps({"error": "Invalid start_date format. Use YYYY-MM-DD"})
+                if end_date:
+                    try:
+                        end_dt = datetime.fromisoformat(end_date)
+                        date_filter["$lte"] = end_dt
+                    except ValueError:
+                        return json.dumps({"error": "Invalid end_date format. Use YYYY-MM-DD"})
+                query_dict["date"] = date_filter
+
+            # Get total count
+            total = await expenses_collection.count_documents(query_dict)
+
+            # Get expenses with pagination
+            expenses_cursor = expenses_collection.find(query_dict).skip(skip).limit(limit).sort("date", -1)
+            expenses = []
+            async for expense_doc in expenses_cursor:
+                # Convert to response format
+                expense_response = {
+                    "id": str(expense_doc["_id"]),
+                    "description": expense_doc.get("description", ""),
+                    "amount": expense_doc.get("amount", 0.0),
+                    "vat_amount": expense_doc.get("vat_amount", 0.0),
+                    "vat_rate": expense_doc.get("vat_rate", 20.0),
+                    "category": expense_doc.get("category", "General"),
+                    "date": expense_doc.get("date", "").isoformat() if isinstance(expense_doc.get("date"), datetime) else expense_doc.get("date", ""),
+                    "notes": expense_doc.get("notes"),
+                    "receipt_url": expense_doc.get("receipt_url"),
+                    "created_at": expense_doc.get("created_at", "").isoformat() if isinstance(expense_doc.get("created_at"), datetime) else expense_doc.get("created_at", ""),
+                    "updated_at": expense_doc.get("updated_at", "").isoformat() if isinstance(expense_doc.get("updated_at"), datetime) else expense_doc.get("updated_at", "")
+                }
+                expenses.append(expense_response)
+
+            response = {
+                "expenses": expenses,
+                "total": total
+            }
+            
+            return json.dumps(response, indent=2)
+            
+        except Exception as e:
+            return json.dumps({"error": f"Failed to get expenses: {str(e)}"})
+
+    @kernel_function(
+        description="Get a specific expense by ID",
+        name="get_expense_by_id"
+    )
+    async def get_expense_by_id(self, expense_id: str) -> str:
+        """
+        Retrieve a specific expense by ID
+        
+        Args:
+            expense_id: Expense ID to retrieve
+            
+        Returns:
+            JSON string containing the expense details
+        """
+        try:
+            from database import get_expenses_collection
+            from bson import ObjectId
+            
+            expenses_collection = get_expenses_collection()
+
+            try:
+                expense_doc = await expenses_collection.find_one({"_id": ObjectId(expense_id)})
+            except:
+                return json.dumps({"error": "Invalid expense ID format"})
+
+            if not expense_doc:
+                return json.dumps({"error": "Expense not found"})
+
+            # Convert to response format
+            expense_response = {
+                "id": str(expense_doc["_id"]),
+                "description": expense_doc.get("description", ""),
+                "amount": expense_doc.get("amount", 0.0),
+                "vat_amount": expense_doc.get("vat_amount", 0.0),
+                "vat_rate": expense_doc.get("vat_rate", 20.0),
+                "category": expense_doc.get("category", "General"),
+                "date": expense_doc.get("date", "").isoformat() if isinstance(expense_doc.get("date"), datetime) else expense_doc.get("date", ""),
+                "notes": expense_doc.get("notes"),
+                "receipt_url": expense_doc.get("receipt_url"),
+                "created_at": expense_doc.get("created_at", "").isoformat() if isinstance(expense_doc.get("created_at"), datetime) else expense_doc.get("created_at", ""),
+                "updated_at": expense_doc.get("updated_at", "").isoformat() if isinstance(expense_doc.get("updated_at"), datetime) else expense_doc.get("updated_at", "")
+            }
+
+            response = {
+                "expense": expense_response
+            }
+            
+            return json.dumps(response, indent=2)
+            
+        except Exception as e:
+            return json.dumps({"error": f"Failed to get expense: {str(e)}"})
+
+    @kernel_function(
+        description="Get expenses by category with totals",
+        name="get_expenses_by_category"
+    )
+    async def get_expenses_by_category(self, category: str, start_date: str = "", end_date: str = "") -> str:
+        """
+        Get all expenses for a specific category with totals
+        
+        Args:
+            category: Expense category to filter by
+            start_date: Optional start date filter (YYYY-MM-DD format)
+            end_date: Optional end date filter (YYYY-MM-DD format)
+            
+        Returns:
+            JSON string containing expenses and category totals
+        """
+        try:
+            from database import get_expenses_collection
+            
+            expenses_collection = get_expenses_collection()
+            query_dict = {"category": category}
+
+            # Add date range filter
+            if start_date or end_date:
+                date_filter = {}
+                if start_date:
+                    try:
+                        start_dt = datetime.fromisoformat(start_date)
+                        date_filter["$gte"] = start_dt
+                    except ValueError:
+                        return json.dumps({"error": "Invalid start_date format. Use YYYY-MM-DD"})
+                if end_date:
+                    try:
+                        end_dt = datetime.fromisoformat(end_date)
+                        date_filter["$lte"] = end_dt
+                    except ValueError:
+                        return json.dumps({"error": "Invalid end_date format. Use YYYY-MM-DD"})
+                query_dict["date"] = date_filter
+
+            # Get expenses
+            expenses_cursor = expenses_collection.find(query_dict).sort("date", -1)
+            expenses = []
+            total_amount = 0
+            total_vat = 0
+            
+            async for expense_doc in expenses_cursor:
+                expense_response = {
+                    "id": str(expense_doc["_id"]),
+                    "description": expense_doc.get("description", ""),
+                    "amount": expense_doc.get("amount", 0.0),
+                    "vat_amount": expense_doc.get("vat_amount", 0.0),
+                    "vat_rate": expense_doc.get("vat_rate", 20.0),
+                    "category": expense_doc.get("category", "General"),
+                    "date": expense_doc.get("date", "").isoformat() if isinstance(expense_doc.get("date"), datetime) else expense_doc.get("date", ""),
+                    "notes": expense_doc.get("notes"),
+                    "receipt_url": expense_doc.get("receipt_url")
+                }
+                expenses.append(expense_response)
+                total_amount += expense_doc.get("amount", 0.0)
+                total_vat += expense_doc.get("vat_amount", 0.0)
+
+            response = {
+                "category": category,
+                "expenses": expenses,
+                "summary": {
+                    "count": len(expenses),
+                    "total_amount": round(total_amount, 2),
+                    "total_vat": round(total_vat, 2),
+                    "total_with_vat": round(total_amount + total_vat, 2)
+                }
+            }
+            
+            return json.dumps(response, indent=2)
+            
+        except Exception as e:
+            return json.dumps({"error": f"Failed to get expenses by category: {str(e)}"})
+
+    @kernel_function(
+        description="Calculate expense totals with VAT for a date range",
+        name="calculate_expense_totals"
+    )
+    def calculate_expense_totals(self, expenses_json: str) -> str:
+        """
+        Calculate totals for a list of expenses
+        
+        Args:
+            expenses_json: JSON string containing array of expenses
+            
+        Returns:
+            JSON string containing calculated totals
+        """
+        try:
+            expenses = json.loads(expenses_json)
+            if not isinstance(expenses, list):
+                raise ValueError("Expenses must be an array")
+            
+            total_amount = sum(float(expense.get("amount", 0)) for expense in expenses)
+            total_vat = sum(float(expense.get("vat_amount", 0)) for expense in expenses)
+            total_with_vat = total_amount + total_vat
+            
+            # Group by category
+            category_totals = {}
+            for expense in expenses:
+                category = expense.get("category", "General")
+                if category not in category_totals:
+                    category_totals[category] = {
+                        "count": 0,
+                        "amount": 0,
+                        "vat": 0,
+                        "total": 0
+                    }
+                category_totals[category]["count"] += 1
+                category_totals[category]["amount"] += float(expense.get("amount", 0))
+                category_totals[category]["vat"] += float(expense.get("vat_amount", 0))
+                category_totals[category]["total"] += float(expense.get("amount", 0)) + float(expense.get("vat_amount", 0))
+            
+            result = {
+                "summary": {
+                    "total_expenses": len(expenses),
+                    "total_amount": round(total_amount, 2),
+                    "total_vat": round(total_vat, 2),
+                    "total_with_vat": round(total_with_vat, 2),
+                    "currency": self.currency
+                },
+                "by_category": {
+                    category: {
+                        "count": data["count"],
+                        "amount": round(data["amount"], 2),
+                        "vat": round(data["vat"], 2),
+                        "total": round(data["total"], 2)
+                    }
+                    for category, data in category_totals.items()
+                }
+            }
+            
+            return json.dumps(result, indent=2)
+            
+        except Exception as e:
+            return json.dumps({"error": f"Failed to calculate totals: {str(e)}"})
+
+    # ===== HELPER METHODS =====
+
+    def _extract_expense_from_description(self, description: str) -> Dict[str, Any]:
+        """
+        Extract expense information from description
+        """
+        expense_data = {
+            "description": "",
+            "amount": 0.0,
+            "vat_rate": self.default_vat_rate,
+            "category": "General",
+            "date": datetime.now(),
+            "notes": "",
+            "receipt_url": None
+        }
+        
+        # Extract amount
+        amount_patterns = [
+            r'[€$£](\d+(?:\.\d+)?)',
+            r'(\d+(?:\.\d+)?)\s*[€$£]',
+            r'(?:cost|price|amount|total)[:\s]*[€$£]?(\d+(?:\.\d+)?)',
+            r'(\d+(?:\.\d+)?)\s*(?:euros?|dollars?|pounds?)'
+        ]
+        
+        for pattern in amount_patterns:
+            match = re.search(pattern, description, re.IGNORECASE)
+            if match:
+                expense_data["amount"] = float(match.group(1))
+                break
+        
+        # Extract VAT rate
+        vat_patterns = [
+            r'(?:vat|tax)[:\s]*(\d+(?:\.\d+)?)%?',
+            r'(\d+(?:\.\d+)?)%?\s*(?:vat|tax)',
+            r'tva[:\s]*(\d+(?:\.\d+)?)%?'  # French VAT
+        ]
+        
+        for pattern in vat_patterns:
+            match = re.search(pattern, description, re.IGNORECASE)
+            if match:
+                rate = float(match.group(1))
+                expense_data["vat_rate"] = rate if rate <= 100 else rate / 100
+                break
+        
+        # Extract category based on keywords
+        description_lower = description.lower()
+        category_keywords = {
+            "Materials": ["material", "supplies", "parts", "component", "hardware", "lumber", "steel", "concrete"],
+            "Transport": ["transport", "travel", "taxi", "uber", "flight", "train", "bus", "fuel", "gas", "petrol"],
+            "Equipment": ["equipment", "tool", "machinery", "device", "computer", "laptop", "printer", "scanner"],
+            "Labor": ["labor", "labour", "work", "service", "consultation", "wage", "salary", "hourly"],
+            "Insurance": ["insurance", "coverage", "premium", "policy", "liability", "protection"],
+            "Training": ["training", "course", "education", "seminar", "workshop", "certification", "learning"],
+            "Marketing": ["marketing", "advertising", "promotion", "website", "seo", "social media", "campaign"],
+            "Others": ["misc", "miscellaneous", "other", "various", "general"]
+        }
+        
+        for category, keywords in category_keywords.items():
+            if any(keyword in description_lower for keyword in keywords):
+                expense_data["category"] = category
+                break
+        
+        # Extract date
+        date_patterns = [
+            r'(?:on|date)[:\s]*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})',
+            r'(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})',
+            r'(?:today|yesterday)',
+            r'(\d{1,2}\s+\w+\s+\d{2,4})'
+        ]
+        
+        for pattern in date_patterns:
+            match = re.search(pattern, description, re.IGNORECASE)
+            if match:
+                try:
+                    if "today" in match.group(0).lower():
+                        expense_data["date"] = datetime.now()
+                    elif "yesterday" in match.group(0).lower():
+                        expense_data["date"] = datetime.now() - timedelta(days=1)
+                    else:
+                        date_str = match.group(1)
+                        # Try common date formats
+                        for fmt in ['%d/%m/%Y', '%m/%d/%Y', '%d-%m-%Y', '%m-%d-%Y', '%Y-%m-%d']:
+                            try:
+                                expense_data["date"] = datetime.strptime(date_str, fmt)
+                                break
+                            except ValueError:
+                                continue
+                except (ValueError, AttributeError):
+                    continue
+                break
+        
+        # Extract description (clean up the text)
+        # Remove amount, date, and category keywords to get clean description
+        clean_desc = description
+        for pattern in amount_patterns + date_patterns:
+            clean_desc = re.sub(pattern, "", clean_desc, flags=re.IGNORECASE)
+        
+        # Remove common prefixes and clean up
+        clean_desc = re.sub(r'^(expense|cost|payment|bill|receipt|purchase)[\s:]*', '', clean_desc, flags=re.IGNORECASE)
+        clean_desc = re.sub(r'\s+', ' ', clean_desc).strip()
+        
+        if clean_desc:
+            expense_data["description"] = clean_desc.title()
+        else:
+            expense_data["description"] = f"{expense_data['category']} Expense"
+        
+        # Extract notes
+        note_patterns = [
+            r'(?:note|notes|comment|comments)[:\s]*([^,\.;]+)',
+            r'(?:for|regarding)[:\s]*([^,\.;]+)'
+        ]
+        
+        for pattern in note_patterns:
+            match = re.search(pattern, description, re.IGNORECASE)
+            if match:
+                expense_data["notes"] = match.group(1).strip()
+                break
+        
+        # Extract receipt URL
+        url_pattern = r'(?:receipt|url|link)[:\s]*(https?://[^\s]+)'
+        url_match = re.search(url_pattern, description, re.IGNORECASE)
+        if url_match:
+            expense_data["receipt_url"] = url_match.group(1)
+        
+        return expense_data
         """
         Extract structured expense information from receipt text or description
         

@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
 from config.settings import Settings
-from models import Invoice, QuoteItem, Client, InvoiceStatus
+from models.invoices import Invoice, InvoiceItem, InvoiceStatus, EInvoiceStatus, ItemType
 
 class InvoiceTools:
     """
@@ -29,140 +29,238 @@ class InvoiceTools:
         self.currency = settings.default_currency
     
     @kernel_function(
-        description="Generate a complete invoice from natural language text description",
-        name="generate_invoice_from_text"
+        description="Create a new invoice from natural language description",
+        name="create_invoice"
     )
-    def generate_invoice_from_text(self, description: str, client_id: Optional[str] = None) -> str:
+    def create_invoice(self, description: str) -> str:
         """
-        Generate a complete invoice from text description
+        Create a new invoice from text description
         
         Args:
             description: Natural language description of the invoice
-            client_id: Optional client ID if known
             
         Returns:
-            JSON string containing the generated invoice data
-            
-        Example:
-            Input: "Create invoice for John Doe at 123 Main St for website development 40 hours at €50/hour"
-            Output: JSON with complete invoice structure
+            JSON string for frontend verification before API call
         """
         try:
             # Extract invoice items from description
             items = self._extract_items_from_description(description)
             
-            # Extract client information if not provided
-            if not client_id:
-                client_data = self._extract_client_from_description(description)
-            else:
-                # In a real implementation, you would fetch client data from database
-                client_data = {"id": client_id, "name": "Client", "email": "", "phone": "", "address": ""}
+            # Extract client information
+            client_data = self._extract_client_from_description(description)
             
             # Calculate totals
             subtotal = sum(item["total"] for item in items)
             discount = self._extract_discount_from_description(description)
-            vat_amount = (subtotal - discount) * (self.default_vat_rate / 100)
+            vat_rate = self._extract_vat_rate_from_description(description) or self.default_vat_rate
+            vat_amount = (subtotal - discount) * (vat_rate / 100)
             total = subtotal - discount + vat_amount
             
             # Generate invoice number
             invoice_number = self._generate_invoice_number()
             
-            # Create invoice structure
-            invoice_data = {
-                "id": str(uuid.uuid4()),
-                "client_id": client_data.get("id", str(uuid.uuid4())),
-                "client": client_data,
-                "number": invoice_number,
-                "items": items,
-                "subtotal": round(subtotal, 2),
-                "discount": round(discount, 2),
-                "vat_rate": self.default_vat_rate,
-                "vat_amount": round(vat_amount, 2),
-                "total": round(total, 2),
-                "status": "draft",
-                "created_at": datetime.now().isoformat(),
-                "due_date": (datetime.now() + timedelta(days=30)).isoformat(),
-                "notes": self._extract_notes_from_description(description)
+            # Extract due date
+            due_date = self._extract_due_date_from_description(description)
+            
+            # Create response matching API format
+            response = {
+                "action": "create_invoice",
+                "endpoint": "/api/invoices/",
+                "method": "POST",
+                "data": {
+                    "clientId": client_data.get("id", str(uuid.uuid4())),
+                    "number": invoice_number,
+                    "items": [
+                        {
+                            "id": item["id"],
+                            "description": item["description"],
+                            "quantity": item["quantity"],
+                            "unitPrice": item["unit_price"],
+                            "total": item["total"],
+                            "type": item["type"]
+                        } for item in items
+                    ],
+                    "discount": round(discount, 2),
+                    "vatRate": vat_rate,
+                    "dueDate": due_date.isoformat() if due_date else (datetime.now() + timedelta(days=30)).isoformat(),
+                    "notes": self._extract_notes_from_description(description)
+                },
+                "preview": {
+                    "invoice": {
+                        "id": str(uuid.uuid4()),
+                        "clientId": client_data.get("id", str(uuid.uuid4())),
+                        "number": invoice_number,
+                        "items": [
+                            {
+                                "id": item["id"],
+                                "description": item["description"],
+                                "quantity": item["quantity"],
+                                "unitPrice": item["unit_price"],
+                                "total": item["total"],
+                                "type": item["type"]
+                            } for item in items
+                        ],
+                        "subtotal": round(subtotal, 2),
+                        "discount": round(discount, 2),
+                        "vatRate": vat_rate,
+                        "vatAmount": round(vat_amount, 2),
+                        "total": round(total, 2),
+                        "status": "draft",
+                        "dueDate": due_date.isoformat() if due_date else (datetime.now() + timedelta(days=30)).isoformat(),
+                        "eInvoiceStatus": None,
+                        "notes": self._extract_notes_from_description(description),
+                        "createdAt": datetime.now().isoformat(),
+                        "updatedAt": datetime.now().isoformat()
+                    }
+                }
             }
             
-            return json.dumps(invoice_data, indent=2)
+            return json.dumps(response, indent=2)
             
         except Exception as e:
-            return json.dumps({"error": f"Failed to generate invoice: {str(e)}"})
+            return json.dumps({"error": f"Failed to create invoice: {str(e)}"})
     
     @kernel_function(
-        description="Extract billable items (services, products, labor) from text description",
-        name="extract_items_from_description"
+        description="Update an existing invoice",
+        name="update_invoice"
     )
-    def extract_items_from_description(self, description: str) -> str:
+    def update_invoice(self, invoice_id: str, description: str) -> str:
         """
-        Extract billable items from natural language description
+        Update an existing invoice based on description
         
         Args:
-            description: Text containing item descriptions, quantities, and prices
+            invoice_id: ID of the invoice to update
+            description: Natural language description of changes
             
         Returns:
-            JSON string containing list of extracted items
-            
-        Example:
-            Input: "Website development 40 hours at €50/hour, hosting setup €200, domain registration €15"
-            Output: JSON array with item objects
+            JSON string for frontend verification before API call
         """
         try:
+            # Parse what needs to be updated from description
+            update_data = {}
+            
+            # Check for status changes
+            status_keywords = {
+                "draft": ["draft"],
+                "sent": ["send", "sent", "email", "mail"],
+                "paid": ["paid", "payment", "received"],
+                "overdue": ["overdue", "late"],
+                "cancelled": ["cancel", "cancelled", "void"]
+            }
+            
+            for status, keywords in status_keywords.items():
+                if any(keyword in description.lower() for keyword in keywords):
+                    update_data["status"] = status
+                    break
+            
+            # Check for new items
             items = self._extract_items_from_description(description)
-            return json.dumps(items, indent=2)
+            if items:
+                update_data["items"] = [
+                    {
+                        "id": item["id"],
+                        "description": item["description"],
+                        "quantity": item["quantity"],
+                        "unitPrice": item["unit_price"],
+                        "total": item["total"],
+                        "type": item["type"]
+                    } for item in items
+                ]
             
-        except Exception as e:
-            return json.dumps({"error": f"Failed to extract items: {str(e)}"})
-    
-    @kernel_function(
-        description="Calculate invoice totals with VAT, discounts, and final amount",
-        name="calculate_totals"
-    )
-    def calculate_totals(self, items_json: str, discount: float = 0.0, vat_rate: Optional[float] = None) -> str:
-        """
-        Calculate totals for invoice items with VAT and discounts
-        
-        Args:
-            items_json: JSON string containing array of items with quantities and prices
-            discount: Discount amount to apply
-            vat_rate: VAT rate to use (defaults to company default)
+            # Check for discount changes
+            discount = self._extract_discount_from_description(description)
+            if discount > 0:
+                update_data["discount"] = discount
             
-        Returns:
-            JSON string containing calculated totals
-        """
-        try:
-            items = json.loads(items_json)
-            if not isinstance(items, list):
-                raise ValueError("Items must be an array")
+            # Check for VAT rate changes
+            vat_rate = self._extract_vat_rate_from_description(description)
+            if vat_rate:
+                update_data["vatRate"] = vat_rate
             
-            # Calculate subtotal
-            subtotal = sum(item.get("total", 0) for item in items)
+            # Check for due date changes
+            due_date = self._extract_due_date_from_description(description)
+            if due_date:
+                update_data["dueDate"] = due_date.isoformat()
             
-            # Apply discount
-            discounted_subtotal = subtotal - discount
+            # Check for notes
+            notes = self._extract_notes_from_description(description)
+            if notes:
+                update_data["notes"] = notes
             
-            # Calculate VAT
-            vat_rate = vat_rate or self.default_vat_rate
-            vat_amount = discounted_subtotal * (vat_rate / 100)
+            # Check for invoice number changes
+            number = self._extract_invoice_number_from_description(description)
+            if number:
+                update_data["number"] = number
             
-            # Calculate total
-            total = discounted_subtotal + vat_amount
+            # Calculate preview totals if items changed
+            preview_totals = {}
+            if "items" in update_data:
+                subtotal = sum(item["total"] for item in items)
+                discount_amount = update_data.get("discount", 0)
+                vat_rate_value = update_data.get("vatRate", self.default_vat_rate)
+                vat_amount = (subtotal - discount_amount) * (vat_rate_value / 100)
+                total = subtotal - discount_amount + vat_amount
+                
+                preview_totals = {
+                    "subtotal": round(subtotal, 2),
+                    "discount": round(discount_amount, 2),
+                    "vatRate": vat_rate_value,
+                    "vatAmount": round(vat_amount, 2),
+                    "total": round(total, 2)
+                }
             
-            result = {
-                "subtotal": round(subtotal, 2),
-                "discount": round(discount, 2),
-                "discounted_subtotal": round(discounted_subtotal, 2),
-                "vat_rate": vat_rate,
-                "vat_amount": round(vat_amount, 2),
-                "total": round(total, 2),
-                "currency": self.currency
+            response = {
+                "action": "update_invoice",
+                "endpoint": f"/api/invoices/{invoice_id}",
+                "method": "PUT",
+                "data": update_data,
+                "preview": {
+                    "invoice": {
+                        "id": invoice_id,
+                        **update_data,
+                        **preview_totals,
+                        "updatedAt": datetime.now().isoformat()
+                    }
+                }
             }
             
-            return json.dumps(result, indent=2)
+            return json.dumps(response, indent=2)
             
         except Exception as e:
-            return json.dumps({"error": f"Failed to calculate totals: {str(e)}"})
+            return json.dumps({"error": f"Failed to update invoice: {str(e)}"})
+    
+    @kernel_function(
+        description="Delete an invoice by ID",
+        name="delete_invoice"
+    )
+    def delete_invoice(self, invoice_id: str, description: str = "") -> str:
+        """
+        Delete an invoice by ID
+        
+        Args:
+            invoice_id: ID of the invoice to delete
+            description: Optional reason for deletion
+            
+        Returns:
+            JSON string for frontend verification before API call
+        """
+        try:
+            response = {
+                "action": "delete_invoice",
+                "endpoint": f"/api/invoices/{invoice_id}",
+                "method": "DELETE",
+                "data": {},
+                "preview": {
+                    "message": "Invoice will be permanently deleted",
+                    "invoice_id": invoice_id,
+                    "reason": description if description else "User requested deletion"
+                }
+            }
+            
+            return json.dumps(response, indent=2)
+            
+        except Exception as e:
+            return json.dumps({"error": f"Failed to prepare invoice deletion: {str(e)}"})
     
     @kernel_function(
         description="Generate a unique invoice number following company format",
@@ -194,41 +292,230 @@ class InvoiceTools:
             return f"INV-{datetime.now().year}-0001"
     
     @kernel_function(
-        description="Convert a quote to an invoice with updated status and due date",
-        name="convert_quote_to_invoice"
+        description="Get all invoices with optional filtering and search",
+        name="get_invoices"
     )
-    def convert_quote_to_invoice(self, quote_json: str) -> str:
+    async def get_invoices(self, search: str = "", status_filter: str = "", client_id: str = "", skip: int = 0, limit: int = 100) -> str:
+        """
+        Retrieve a list of invoices with optional filtering
+        
+        Args:
+            search: Optional search text to filter by invoice number or client ID
+            status_filter: Filter by status: draft, sent, paid, overdue, cancelled
+            client_id: Filter by client ID
+            skip: Number of invoices to skip
+            limit: Maximum number of invoices to return
+            
+        Returns:
+            JSON string containing the list of invoices
+        """
+        try:
+            from database import get_invoices_collection
+            from bson import ObjectId
+            
+            invoices_collection = get_invoices_collection()
+            query_dict = {}
+
+            # Add search filter
+            if search:
+                import re
+                regex = re.compile(re.escape(search), re.IGNORECASE)
+                query_dict["$or"] = [
+                    {"number": {"$regex": regex}},
+                    {"clientId": {"$regex": regex}}
+                ]
+
+            # Add status filter
+            if status_filter:
+                valid_statuses = ["draft", "sent", "paid", "overdue", "cancelled"]
+                if status_filter not in valid_statuses:
+                    return json.dumps({"error": f"Invalid status filter: {status_filter}"})
+                query_dict["status"] = status_filter
+
+            # Add client ID filter
+            if client_id:
+                query_dict["clientId"] = client_id
+
+            # Get total count
+            total = await invoices_collection.count_documents(query_dict)
+
+            # Get invoices with pagination
+            invoices_cursor = invoices_collection.find(query_dict).skip(skip).limit(limit).sort("createdAt", -1)
+            invoices = []
+            async for invoice_doc in invoices_cursor:
+                # Convert to response format
+                invoice_response = {
+                    "id": str(invoice_doc["_id"]),
+                    "clientId": invoice_doc.get("clientId", ""),
+                    "number": invoice_doc.get("number", ""),
+                    "items": invoice_doc.get("items", []),
+                    "subtotal": invoice_doc.get("subtotal", 0.0),
+                    "discount": invoice_doc.get("discount", 0.0),
+                    "vatRate": invoice_doc.get("vatRate", 20.0),
+                    "vatAmount": invoice_doc.get("vatAmount", 0.0),
+                    "total": invoice_doc.get("total", 0.0),
+                    "status": invoice_doc.get("status", "draft"),
+                    "dueDate": invoice_doc.get("dueDate", "").isoformat() if isinstance(invoice_doc.get("dueDate"), datetime) else invoice_doc.get("dueDate", ""),
+                    "eInvoiceStatus": invoice_doc.get("eInvoiceStatus"),
+                    "notes": invoice_doc.get("notes"),
+                    "createdAt": invoice_doc.get("createdAt", "").isoformat() if isinstance(invoice_doc.get("createdAt"), datetime) else invoice_doc.get("createdAt", ""),
+                    "updatedAt": invoice_doc.get("updatedAt", "").isoformat() if isinstance(invoice_doc.get("updatedAt"), datetime) else invoice_doc.get("updatedAt", "")
+                }
+                invoices.append(invoice_response)
+
+            response = {
+                "invoices": invoices,
+                "total": total
+            }
+            
+            return json.dumps(response, indent=2)
+            
+        except Exception as e:
+            return json.dumps({"error": f"Failed to get invoices: {str(e)}"})
+    @kernel_function(
+        description="Get a specific invoice by ID",
+        name="get_invoice_by_id"
+    )
+    async def get_invoice_by_id(self, invoice_id: str) -> str:
+        """
+        Retrieve a specific invoice by ID
+        
+        Args:
+            invoice_id: Invoice ID to retrieve
+            
+        Returns:
+            JSON string containing the invoice details
+        """
+        try:
+            from database import get_invoices_collection
+            from bson import ObjectId
+            
+            invoices_collection = get_invoices_collection()
+
+            try:
+                invoice_doc = await invoices_collection.find_one({"_id": ObjectId(invoice_id)})
+            except:
+                return json.dumps({"error": "Invalid invoice ID format"})
+
+            if not invoice_doc:
+                return json.dumps({"error": "Invoice not found"})
+
+            # Convert to response format
+            invoice_response = {
+                "id": str(invoice_doc["_id"]),
+                "clientId": invoice_doc.get("clientId", ""),
+                "number": invoice_doc.get("number", ""),
+                "items": invoice_doc.get("items", []),
+                "subtotal": invoice_doc.get("subtotal", 0.0),
+                "discount": invoice_doc.get("discount", 0.0),
+                "vatRate": invoice_doc.get("vatRate", 20.0),
+                "vatAmount": invoice_doc.get("vatAmount", 0.0),
+                "total": invoice_doc.get("total", 0.0),
+                "status": invoice_doc.get("status", "draft"),
+                "dueDate": invoice_doc.get("dueDate", "").isoformat() if isinstance(invoice_doc.get("dueDate"), datetime) else invoice_doc.get("dueDate", ""),
+                "eInvoiceStatus": invoice_doc.get("eInvoiceStatus"),
+                "notes": invoice_doc.get("notes"),
+                "createdAt": invoice_doc.get("createdAt", "").isoformat() if isinstance(invoice_doc.get("createdAt"), datetime) else invoice_doc.get("createdAt", ""),
+                "updatedAt": invoice_doc.get("updatedAt", "").isoformat() if isinstance(invoice_doc.get("updatedAt"), datetime) else invoice_doc.get("updatedAt", "")
+            }
+
+            response = {
+                "invoice": invoice_response
+            }
+            
+            return json.dumps(response, indent=2)
+            
+        except Exception as e:
+            return json.dumps({"error": f"Failed to get invoice: {str(e)}"})
+    def convert_quote_to_invoice(self, quote_id: str, description: str = "") -> str:
         """
         Convert an existing quote to an invoice
         
         Args:
-            quote_json: JSON string containing quote data
+            quote_id: ID of the quote to convert
+            description: Optional additional details for the conversion
             
         Returns:
-            JSON string containing converted invoice data
+            JSON string for frontend verification before API call
         """
         try:
-            quote_data = json.loads(quote_json)
+            # Generate new invoice number
+            invoice_number = self._generate_invoice_number()
             
-            # Convert quote to invoice
-            invoice_data = {
-                **quote_data,
-                "id": str(uuid.uuid4()),  # New ID for invoice
-                "number": self._generate_invoice_number(),  # New invoice number
-                "status": "draft",  # Invoice status instead of quote status
-                "created_at": datetime.now().isoformat(),
-                "due_date": (datetime.now() + timedelta(days=30)).isoformat(),
-                "quote_id": quote_data.get("id"),  # Reference to original quote
+            # Extract any additional information from description
+            due_date = self._extract_due_date_from_description(description) if description else None
+            notes = self._extract_notes_from_description(description) if description else ""
+            
+            response = {
+                "action": "convert_quote_to_invoice",
+                "endpoint": "/api/invoices/",
+                "method": "POST",
+                "data": {
+                    "quote_id": quote_id,
+                    "number": invoice_number,
+                    "dueDate": due_date.isoformat() if due_date else (datetime.now() + timedelta(days=30)).isoformat(),
+                    "notes": notes,
+                    "status": "draft"
+                },
+                "preview": {
+                    "message": f"Quote {quote_id} will be converted to invoice {invoice_number}",
+                    "new_invoice_number": invoice_number,
+                    "due_date": due_date.isoformat() if due_date else (datetime.now() + timedelta(days=30)).isoformat(),
+                    "status": "draft"
+                }
             }
             
-            # Remove quote-specific fields
-            if "valid_until" in invoice_data:
-                del invoice_data["valid_until"]
-            
-            return json.dumps(invoice_data, indent=2)
+            return json.dumps(response, indent=2)
             
         except Exception as e:
             return json.dumps({"error": f"Failed to convert quote to invoice: {str(e)}"})
+
+    @kernel_function(
+        description="Calculate invoice totals with VAT, discounts, and final amount",
+        name="calculate_invoice_totals"
+    )
+    def calculate_invoice_totals(self, items_json: str, discount: float = 0.0, vat_rate: float = 20.0) -> str:
+        """
+        Calculate totals for invoice items with VAT and discounts
+        
+        Args:
+            items_json: JSON string containing array of items with quantities and prices
+            discount: Discount amount to apply
+            vat_rate: VAT rate to use (defaults to company default)
+            
+        Returns:
+            JSON string containing calculated totals
+        """
+        try:
+            items = json.loads(items_json)
+            if not isinstance(items, list):
+                raise ValueError("Items must be an array")
+            
+            # Calculate subtotal from item totals
+            subtotal = sum(float(item.get("total", 0)) for item in items)
+            
+            # Apply discount
+            subtotal_after_discount = subtotal - discount
+            
+            # Calculate VAT
+            vat_amount = subtotal_after_discount * (vat_rate / 100)
+            
+            # Calculate total
+            total = subtotal_after_discount + vat_amount
+            
+            result = {
+                "subtotal": round(subtotal, 2),
+                "vatAmount": round(vat_amount, 2),
+                "total": round(total, 2),
+                "discount": round(discount, 2),
+                "vatRate": vat_rate,
+                "currency": self.currency
+            }
+            
+            return json.dumps(result, indent=2)
+            
+        except Exception as e:
+            return json.dumps({"error": f"Failed to calculate totals: {str(e)}"})
     
     def _extract_items_from_description(self, description: str) -> List[Dict[str, Any]]:
         """
@@ -396,6 +683,78 @@ class InvoiceTools:
         
         return client_data
     
+    def _extract_vat_rate_from_description(self, description: str) -> Optional[float]:
+        """
+        Extract VAT rate from description
+        """
+        # Pattern for VAT rates
+        vat_patterns = [
+            r'(?:vat|tax)[:\s]*(\d+(?:\.\d+)?)%?',
+            r'(\d+(?:\.\d+)?)%?\s*(?:vat|tax)',
+            r'tva[:\s]*(\d+(?:\.\d+)?)%?'  # French VAT
+        ]
+        
+        for pattern in vat_patterns:
+            match = re.search(pattern, description, re.IGNORECASE)
+            if match:
+                rate = float(match.group(1))
+                return rate if rate <= 100 else rate / 100  # Handle percentage formats
+        
+        return None
+
+    def _extract_due_date_from_description(self, description: str) -> Optional[datetime]:
+        """
+        Extract due date from description
+        """
+        # Pattern for due dates
+        date_patterns = [
+            r'(?:due|pay by|payment due)[:\s]*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})',
+            r'(?:due|pay by|payment due)[:\s]*(\d{1,2}\s+\w+\s+\d{2,4})',
+            r'in\s+(\d+)\s+days?',
+            r'(\d+)\s+days?\s+(?:from now|later)'
+        ]
+        
+        for pattern in date_patterns:
+            match = re.search(pattern, description, re.IGNORECASE)
+            if match:
+                try:
+                    date_str = match.group(1)
+                    if 'days' in pattern:
+                        # Handle relative dates
+                        days = int(date_str)
+                        return datetime.now() + timedelta(days=days)
+                    else:
+                        # Handle absolute dates (simplified parsing)
+                        if '/' in date_str or '-' in date_str:
+                            # Try common date formats
+                            for fmt in ['%d/%m/%Y', '%m/%d/%Y', '%d-%m-%Y', '%m-%d-%Y']:
+                                try:
+                                    return datetime.strptime(date_str, fmt)
+                                except ValueError:
+                                    continue
+                except (ValueError, IndexError):
+                    continue
+        
+        return None
+
+    def _extract_invoice_number_from_description(self, description: str) -> Optional[str]:
+        """
+        Extract invoice number from description
+        """
+        # Pattern for invoice numbers
+        number_patterns = [
+            r'(?:invoice|inv|facture)[:\s#]*([A-Z0-9-]+)',
+            r'(?:number|num|no)[:\s#]*([A-Z0-9-]+)',
+            r'#([A-Z0-9-]+)'
+        ]
+        
+        for pattern in number_patterns:
+            match = re.search(pattern, description, re.IGNORECASE)
+            if match:
+                return match.group(1).upper()
+        
+        return None
+
     def _extract_discount_from_description(self, description: str) -> float:
         """
         Extract discount amount from description
