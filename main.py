@@ -15,29 +15,38 @@ from datetime import datetime
 
 # Setup logging configuration with Windows compatibility
 import sys
+from config.settings import Settings
+
+# Load settings early for logging configuration
+settings = Settings()
 
 # Create console handler with UTF-8 encoding for Windows
 console_handler = logging.StreamHandler(sys.stdout)
 console_handler.setLevel(logging.INFO)
 
-# Create file handler with UTF-8 encoding
-file_handler = logging.FileHandler('devia_backend.log', encoding='utf-8')
-file_handler.setLevel(logging.INFO)
+# Create file handler with UTF-8 encoding (only when not in debug mode)
+file_handler = None
+if not settings.debug:
+    file_handler = logging.FileHandler('devia_backend.log', encoding='utf-8')
+    file_handler.setLevel(logging.INFO)
 
 # Create formatter
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 console_handler.setFormatter(formatter)
-file_handler.setFormatter(formatter)
+if file_handler:
+    file_handler.setFormatter(formatter)
 
 # Configure root logger
+handlers = [console_handler]
+if file_handler:
+    handlers.append(file_handler)
+
 logging.basicConfig(
     level=logging.INFO,
-    handlers=[console_handler, file_handler]
+    handlers=handlers
 )
 
 logger = logging.getLogger(__name__)
-
-from config.settings import Settings
 from api.routes import agent_router
 from services.semantic_kernel_service import SemanticKernelService
 from database import connect_to_mongo, close_mongo_connection, is_connected, get_database
@@ -47,7 +56,7 @@ load_dotenv()
 
 # Global service instances
 sk_service = None
-settings = Settings()
+# settings already loaded above for logging
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -107,14 +116,15 @@ app = FastAPI(
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:3000,http://localhost:5173").split(","),
+    allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:3000,http://localhost:5173,file://").split(",") + ["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    allow_origin_regex=".*"  # Allow all origins for WebSocket connections
 )
 
 # Include API routes
-app.include_router(agent_router, prefix="/api")
+app.include_router(agent_router)  # No prefix to allow WebSocket access at /agent/voice
 
 # Error handlers
 @app.exception_handler(HTTPException)
@@ -234,5 +244,6 @@ if __name__ == "__main__":
         host=settings.app_host,
         port=settings.app_port,
         reload=settings.debug,
+        reload_excludes=["*.log", "*.pyc", "__pycache__/*"],
         log_level="info"
     )

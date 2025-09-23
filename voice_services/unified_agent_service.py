@@ -1,6 +1,7 @@
 """
-Unified AI Agent Service
+Unified AI Agent Service for Voice Processing
 Handles single prompt workflow with intent detection, data extraction, and response formatting
+Enhanced with audio transcription and text-to-speech capabilities
 """
 
 import json
@@ -10,6 +11,7 @@ from datetime import datetime
 from enum import Enum
 
 from services.semantic_kernel_service import SemanticKernelService
+from .unified_audio_service import UnifiedAudioService
 
 class Intent(str, Enum):
     """Supported intents for AI agent"""
@@ -31,12 +33,24 @@ class ConversationState(str, Enum):
 class UnifiedAgentService:
     """
     Unified service that handles all AI agent interactions through a single endpoint
-    Workflow: Prompt -> Intent Detection -> Data Extraction -> Missing Data Check -> Response
+    Enhanced with voice processing capabilities for audio input and output
+    Workflow: Audio -> Transcription -> Intent Detection -> Data Extraction -> Response -> TTS
     """
     
     def __init__(self, sk_service: SemanticKernelService):
         self.sk_service = sk_service
         self.logger = logging.getLogger(__name__)
+        
+        # Initialize audio service for voice processing (loads API key from settings)
+        try:
+            self.audio_service = UnifiedAudioService()
+            self.audio_enabled = True
+            self.logger.info("Voice-enabled Unified Agent Service initialized with audio capabilities")
+        except Exception as e:
+            self.logger.warning(f"Could not initialize audio service: {e}")
+            self.audio_service = None
+            self.audio_enabled = False
+            self.logger.info("Unified Agent Service initialized without audio capabilities")
         
         # In-memory conversation storage (replace with database in production)
         self.conversations: Dict[str, Dict] = {}
@@ -681,3 +695,323 @@ class UnifiedAgentService:
             "created_at": conversation["created_at"],
             "updated_at": conversation["updated_at"]
         }
+    
+    def generate_human_friendly_response(self, structured_response: Dict[str, Any]) -> str:
+        """
+        Generate human-friendly response from structured agent response
+        Specifically designed for voice/audio output with natural language
+        
+        Args:
+            structured_response: The structured response from process_agent_request
+            
+        Returns:
+            Natural language response suitable for text-to-speech
+        """
+        try:
+            if not structured_response.get("success", False):
+                error_msg = structured_response.get("message", "I encountered an error")
+                return f"I'm sorry, but {error_msg.lower()}. Please try again with more details."
+            
+            data = structured_response.get("data", {})
+            intent = data.get("intent")
+            
+            # Handle different response types based on intent
+            if intent == "invoice":
+                return self._generate_invoice_voice_response(data)
+            elif intent == "quote":
+                return self._generate_quote_voice_response(data)
+            elif intent == "customer":
+                return self._generate_customer_voice_response(data)
+            elif intent == "job":
+                return self._generate_job_voice_response(data)
+            elif intent == "expense":
+                return self._generate_expense_voice_response(data)
+            else:
+                # Generic response for unknown intents
+                action = structured_response.get("action", "processed your request")
+                return f"I've {action} successfully. The information has been saved and is ready for your review."
+                
+        except Exception as e:
+            self.logger.error(f"Error generating human response: {e}")
+            return "I've processed your request, but I'm having trouble generating a clear summary. Please check the detailed response for more information."
+    
+    def _generate_invoice_voice_response(self, data: Dict[str, Any]) -> str:
+        """Generate human-friendly response for invoice operations"""
+        customer_name = data.get("customer_name", "the customer")
+        total_amount = data.get("total_amount", 0)
+        currency = data.get("currency", "euros")
+        
+        # Format amount nicely for voice
+        if isinstance(total_amount, (int, float)) and total_amount > 0:
+            amount_text = f"{total_amount} {currency}"
+        else:
+            amount_text = "the specified amount"
+        
+        items = data.get("items", [])
+        if items and len(items) > 0:
+            if len(items) == 1:
+                item_text = f"for {items[0].get('description', 'the service')}"
+            else:
+                item_text = f"for {len(items)} different items"
+        else:
+            item_text = "for the requested services"
+        
+        return f"Perfect! I've created an invoice for {customer_name} {item_text} with a total of {amount_text}. The invoice has been saved in your system and is ready to be sent to the customer."
+    
+    def _generate_quote_voice_response(self, data: Dict[str, Any]) -> str:
+        """Generate human-friendly response for quote operations"""
+        customer_name = data.get("customer_name", "the customer")
+        estimated_total = data.get("estimated_total", 0)
+        currency = data.get("currency", "euros")
+        
+        if isinstance(estimated_total, (int, float)) and estimated_total > 0:
+            amount_text = f"{estimated_total} {currency}"
+        else:
+            amount_text = "the estimated amount"
+        
+        services = data.get("services", [])
+        if services and len(services) > 0:
+            if len(services) == 1:
+                service_text = f"for {services[0].get('description', 'the service')}"
+            else:
+                service_text = f"for {len(services)} different services"
+        else:
+            service_text = "for the requested services"
+        
+        return f"Excellent! I've prepared a quote for {customer_name} {service_text} with an estimated total of {amount_text}. The quote is ready for your review and can be sent to the customer whenever you're ready."
+    
+    def _generate_customer_voice_response(self, data: Dict[str, Any]) -> str:
+        """Generate human-friendly response for customer operations"""
+        name = data.get("name", "the new contact")
+        email = data.get("email")
+        phone = data.get("phone")
+        
+        contact_details = []
+        if email and email != "N/A":
+            contact_details.append(f"email {email}")
+        if phone and phone != "N/A":
+            contact_details.append(f"phone number {phone}")
+        
+        if contact_details:
+            contact_text = " with " + " and ".join(contact_details)
+        else:
+            contact_text = ""
+        
+        return f"Great! I've successfully added {name}{contact_text} to your customer database. Their information has been saved and they're now available for future invoices, quotes, and job scheduling."
+    
+    def _generate_job_voice_response(self, data: Dict[str, Any]) -> str:
+        """Generate human-friendly response for job operations"""
+        title = data.get("title", "the job")
+        customer_name = data.get("customer_name", "the customer")
+        scheduled_date = data.get("scheduled_date", "the scheduled time")
+        duration = data.get("duration")
+        
+        duration_text = ""
+        if duration and duration != "N/A":
+            duration_text = f" for {duration}"
+        
+        return f"Perfect! I've scheduled {title} for {customer_name} on {scheduled_date}{duration_text}. The job has been added to your calendar and all the relevant details have been saved in your system."
+    
+    def _generate_expense_voice_response(self, data: Dict[str, Any]) -> str:
+        """Generate human-friendly response for expense operations"""
+        description = data.get("description", "the expense")
+        amount = data.get("amount", 0)
+        currency = data.get("currency", "euros")
+        category = data.get("category")
+        date = data.get("date", "today")
+        
+        if isinstance(amount, (int, float)) and amount > 0:
+            amount_text = f"{amount} {currency}"
+        else:
+            amount_text = "the specified amount"
+        
+        category_text = ""
+        if category and category != "N/A":
+            category_text = f" in the {category} category"
+        
+        return f"Done! I've recorded the expense for {description} with an amount of {amount_text}{category_text} for {date}. This has been added to your expense tracking system for proper record keeping."
+    
+    # Audio processing methods
+    async def process_audio_request(
+        self, 
+        audio_bytes: bytes, 
+        user_id: str, 
+        language: str = "en",
+        audio_filename: str = "audio.mp3"
+    ) -> Dict[str, Any]:
+        """
+        Complete audio-to-audio processing workflow
+        
+        Args:
+            audio_bytes: Raw audio data
+            user_id: User identifier
+            language: Language preference
+            audio_filename: Original filename for format detection
+            
+        Returns:
+            Complete processing result with transcription, structured data, and audio response
+        """
+        if not self.audio_enabled:
+            return {
+                "success": False,
+                "error": "Audio processing not available",
+                "message": "Audio services are not initialized"
+            }
+        
+        try:
+            self.logger.info(f"Starting audio processing for user {user_id}")
+            
+            # Step 1: Transcribe audio
+            transcription_result = await self.audio_service.transcribe_bytes(
+                audio_bytes, 
+                filename=audio_filename,
+                language=language
+            )
+            
+            if not transcription_result or not transcription_result.get("success"):
+                return {
+                    "success": False,
+                    "error": "Audio transcription failed",
+                    "transcription_result": transcription_result
+                }
+            
+            transcribed_text = transcription_result["text"]
+            self.logger.info(f"Audio transcribed successfully: {transcribed_text[:100]}...")
+            
+            # Step 2: Process transcribed text through unified agent
+            structured_response = await self.process_agent_request(
+                prompt=transcribed_text,
+                user_id=user_id,
+                language=language
+            )
+            
+            # Step 3: Generate human-friendly response
+            human_response = self.generate_human_friendly_response(structured_response)
+            
+            # Step 4: Convert response to audio
+            tts_result = await self.audio_service.synthesize_text(
+                text=human_response,
+                voice="alloy",  # Default voice, could be configurable
+                model="tts-1"
+            )
+            
+            if not tts_result or not tts_result.get("success"):
+                # Return without audio if TTS fails
+                return {
+                    "success": True,
+                    "transcribed_text": transcribed_text,
+                    "structured_response": structured_response,
+                    "human_response": human_response,
+                    "audio_url": None,
+                    "warning": "Audio response generation failed",
+                    "transcription_result": transcription_result,
+                    "tts_result": tts_result
+                }
+            
+            # Step 5: Return complete result
+            return {
+                "success": True,
+                "transcribed_text": transcribed_text,
+                "structured_response": structured_response,
+                "human_response": human_response,
+                "audio_url": tts_result.get("output_path"),
+                "transcription_result": transcription_result,
+                "tts_result": tts_result
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Audio processing failed: {e}")
+            return {
+                "success": False,
+                "error": f"Audio processing error: {str(e)}"
+            }
+    
+    async def transcribe_audio(
+        self, 
+        audio_bytes: bytes, 
+        language: Optional[str] = None,
+        filename: str = "audio.mp3"
+    ) -> Dict[str, Any]:
+        """
+        Transcribe audio to text only
+        
+        Args:
+            audio_bytes: Raw audio data
+            language: Optional language code
+            filename: Filename for format detection
+            
+        Returns:
+            Transcription result
+        """
+        if not self.audio_enabled:
+            return {
+                "success": False,
+                "error": "Audio transcription not available"
+            }
+        
+        return await self.audio_service.transcribe_bytes(
+            audio_bytes, 
+            filename=filename,
+            language=language
+        )
+    
+    async def generate_audio_response(
+        self, 
+        text: str, 
+        voice: str = "alloy", 
+        model: str = "tts-1"
+    ) -> Dict[str, Any]:
+        """
+        Generate audio from text only
+        
+        Args:
+            text: Text to convert to audio
+            voice: Voice to use
+            model: TTS model to use
+            
+        Returns:
+            TTS result
+        """
+        if not self.audio_enabled:
+            return {
+                "success": False,
+                "error": "Audio generation not available"
+            }
+        
+        return await self.audio_service.synthesize_text(text, voice, model=model)
+    
+    def get_audio_service_info(self) -> Dict[str, Any]:
+        """
+        Get information about audio service capabilities
+        
+        Returns:
+            Audio service information
+        """
+        if not self.audio_enabled:
+            return {
+                "enabled": False,
+                "message": "Audio services not available"
+            }
+        
+        return {
+            "enabled": True,
+            **self.audio_service.get_service_info()
+        }
+    
+    async def test_audio_services(self) -> Dict[str, bool]:
+        """
+        Test audio service connections
+        
+        Returns:
+            Test results for audio services
+        """
+        if not self.audio_enabled:
+            return {
+                "audio_enabled": False,
+                "transcription": False,
+                "tts": False
+            }
+        
+        test_results = await self.audio_service.test_all_connections()
+        test_results["audio_enabled"] = True
+        return test_results

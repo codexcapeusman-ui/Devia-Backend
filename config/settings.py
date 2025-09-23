@@ -2,15 +2,16 @@
 Application settings and configuration
 """
 
+from dotenv import load_dotenv
 from pydantic_settings import BaseSettings
 from typing import List
 import os
-
+load_dotenv()
 class Settings(BaseSettings):
     """Application settings loaded from environment variables"""
     
     # OpenAI Configuration
-    openai_api_key: str = ""
+    openai_api_key: str = os.getenv("OPENAI_API_KEY", "your_openai_api_key_here")
     openai_model: str = "gpt-4-turbo-preview"
     
     # Application Configuration
