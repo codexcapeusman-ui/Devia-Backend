@@ -31,6 +31,9 @@ python-dateutil==2.8.2
 orjson==3.9.10
 loguru==0.7.2
 
+# --- Authentication ---
+python-jose==3.3.0
+
 # --- UI & Visualization (for testing/demo) ---
 streamlit==1.28.0
 plotly==5.17.0

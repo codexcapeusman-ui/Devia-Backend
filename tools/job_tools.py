@@ -372,7 +372,7 @@ class JobTools:
         description="Get all jobs from database with optional filtering - returns actual data",
         name="get_jobs"
     )
-    def get_jobs(self, 
+    async def get_jobs(self, 
                 skip: int = 0, 
                 limit: int = 100, 
                 client_id: Optional[str] = None,
@@ -397,7 +397,7 @@ class JobTools:
         """
         try:
             # Run async function in sync context
-            return asyncio.run(self._get_jobs_async(skip, limit, client_id, assigned_to, status, start_date, end_date))
+            return await self._get_jobs_async(skip, limit, client_id, assigned_to, status, start_date, end_date)
         except Exception as e:
             return json.dumps({"error": f"Failed to get jobs: {str(e)}", "jobs": [], "total": 0})
 
@@ -860,7 +860,7 @@ class JobTools:
         description="Get all meetings from database with optional filtering - returns actual data",
         name="get_meetings"
     )
-    def get_meetings(self,
+    async def get_meetings(self,
                     skip: int = 0,
                     limit: int = 100,
                     organizer_id: Optional[str] = None,
@@ -882,7 +882,7 @@ class JobTools:
             JSON string containing actual meetings data from database
         """
         try:
-            return asyncio.run(self._get_meetings_async(skip, limit, organizer_id, status, start_date, end_date))
+            return await self._get_meetings_async(skip, limit, organizer_id, status, start_date, end_date)
         except Exception as e:
             return json.dumps({"error": f"Failed to get meetings: {str(e)}", "meetings": [], "total": 0})
 
@@ -1379,7 +1379,7 @@ class JobTools:
         description="Get all clients from database with optional filtering - returns actual data",
         name="get_clients"
     )
-    def get_clients(self,
+    async def get_clients(self,
                    skip: int = 0,
                    limit: int = 100,
                    search: Optional[str] = None,
@@ -1397,7 +1397,7 @@ class JobTools:
             JSON string containing actual clients data from database
         """
         try:
-            return asyncio.run(self._get_clients_async(skip, limit, search, status_filter))
+            return await self._get_clients_async(skip, limit, search, status_filter)
         except Exception as e:
             return json.dumps({"error": f"Failed to get clients: {str(e)}", "clients": [], "total": 0})
 
@@ -1518,7 +1518,7 @@ class JobTools:
         description="Get all expenses from database with optional filtering - returns actual data",
         name="get_expenses"
     )
-    def get_expenses(self,
+    async def get_expenses(self,
                     skip: int = 0,
                     limit: int = 100,
                     search: Optional[str] = None,
@@ -1540,7 +1540,7 @@ class JobTools:
             JSON string containing actual expenses data from database
         """
         try:
-            return asyncio.run(self._get_expenses_async(skip, limit, search, category_filter, start_date, end_date))
+            return await self._get_expenses_async(skip, limit, search, category_filter, start_date, end_date)
         except Exception as e:
             return json.dumps({"error": f"Failed to get expenses: {str(e)}", "expenses": [], "total": 0})
 

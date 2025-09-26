@@ -434,7 +434,8 @@ INSTRUCTIONS:
 3. Derive line items (services/products with quantities and prices) or let invoice.create_invoice infer them.
 4. Calculate totals with VAT and discounts using invoice.calculate_invoice_totals.
 5. Generate a unique invoice number via invoice.generate_invoice_number if needed.
-6. Return structured data as JSON, ready for the API.
+6. When calling get_* functions, ALWAYS include the user_id parameter from the context to filter data by user.
+7. Return structured data as JSON, ready for the API.
 
 ALWAYS return valid JSON with an invoice structure."""
     
@@ -575,7 +576,8 @@ INSTRUCTIONS:
 1. Pour CONSULTER des données, utiliser les fonctions get_* (retournent données réelles).
 2. Pour CRÉER/MODIFIER/SUPPRIMER, utiliser les fonctions *_api_call (retournent structure API).
 3. Utiliser les fonctions legacy pour analyse et suggestions.
-4. Retourner les données exactement comme reçues des fonctions.
+4. Lors de l'appel des fonctions get_*, TOUJOURS inclure le paramètre user_id du contexte pour filtrer les données par utilisateur.
+5. Retourner les données exactement comme reçues des fonctions.
 
 TOUJOURS retourner un JSON valide avec la structure appropriée."""
         else:
@@ -611,7 +613,8 @@ INSTRUCTIONS:
 1. For VIEWING data, use get_* functions (return real data).
 2. For CREATE/UPDATE/DELETE, use *_api_call functions (return API structures).
 3. Use legacy functions for analysis and suggestions.
-4. Return data exactly as received from functions.
+4. When calling get_* functions, ALWAYS include the user_id parameter from the context to filter data by user.
+5. Return data exactly as received from functions.
 
 ALWAYS return valid JSON with appropriate structure."""
     

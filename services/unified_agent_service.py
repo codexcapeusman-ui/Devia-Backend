@@ -20,6 +20,14 @@ class Intent(str, Enum):
     EXPENSE = "expense"
     UNKNOWN = "unknown"
 
+class Operation(str, Enum):
+    """Supported operations for AI agent"""
+    GET = "get"
+    CREATE = "create"
+    UPDATE = "update"
+    DELETE = "delete"
+    UNKNOWN = "unknown"
+
 class ConversationState(str, Enum):
     """States of conversation flow"""
     INTENT_DETECTION = "intent_detection"
@@ -86,18 +94,23 @@ class UnifiedAgentService:
             
             # Step 1: Intent Detection (if not already detected)
             if conversation["state"] == ConversationState.INTENT_DETECTION:
-                intent, confidence = await self._detect_intent(prompt, language)
+                intent, operation, confidence = await self._detect_intent(prompt, language)
                 conversation["intent"] = intent
+                conversation["operation"] = operation
                 conversation["confidence"] = confidence
                 conversation["data"] = {}
                 
-                self.logger.info(f"Intent detection result: intent={intent}, confidence={confidence}")
+                self.logger.info(f"Intent detection result: intent={intent}, operation={operation}, confidence={confidence}")
                 
                 if intent == Intent.UNKNOWN or confidence < 0.1:
                     self.logger.warning(f"Intent unclear or low confidence: {intent}, {confidence}")
                     return self._create_clarification_response(conversation, language)
                 
-                conversation["state"] = ConversationState.DATA_EXTRACTION
+                # For GET operations, skip data extraction and go directly to response generation
+                if operation == Operation.GET:
+                    conversation["state"] = ConversationState.RESPONSE_GENERATION
+                else:
+                    conversation["state"] = ConversationState.DATA_EXTRACTION
             
             # Step 2: Data Extraction (initial or additional data)
             if conversation["state"] in [ConversationState.DATA_EXTRACTION, ConversationState.DATA_COMPLETION]:
@@ -140,7 +153,7 @@ class UnifiedAgentService:
             # Step 4: Generate Final Response
             if conversation["state"] == ConversationState.RESPONSE_GENERATION:
                 response = await self._generate_final_response(
-                    conversation["intent"], conversation["data"], language
+                    conversation["intent"], conversation.get("operation", Operation.UNKNOWN), conversation["data"], language, user_id
                 )
                 conversation["state"] = ConversationState.COMPLETED
                 
@@ -153,7 +166,7 @@ class UnifiedAgentService:
             self.logger.error(f"Error processing agent request: {e}")
             return self._create_error_response(str(e), language)
     
-    async def _detect_intent(self, prompt: str, language: str) -> Tuple[Intent, float]:
+    async def _detect_intent(self, prompt: str, language: str) -> Tuple[Intent, Operation, float]:
         """
         Detect user intent from the prompt using AI
         
@@ -161,21 +174,29 @@ class UnifiedAgentService:
             Tuple of (intent, confidence_score)
         """
         intent_prompt = f"""
-        Analyze this user prompt and determine their intent. Respond with JSON only.
+        Analyze this user prompt and determine their intent and operation. Respond with JSON only.
         
         User prompt: "{prompt}"
         
         Available intents:
-        - invoice: Creating, generating, or managing invoices
-        - quote: Creating, generating, or managing quotes/estimates
-        - customer: Adding, updating, or managing customer data
-        - job: Scheduling, creating, or managing jobs/appointments
-        - expense: Tracking, adding, or managing expenses
+        - invoice: Related to invoices
+        - quote: Related to quotes/estimates
+        - customer: Related to customer data
+        - job: Related to jobs/appointments
+        - expense: Related to expenses
         - unknown: Intent unclear or not supported
+        
+        Available operations:
+        - get: Retrieving/viewing data (show, list, get, display)
+        - create: Creating new data (create, add, schedule, book)
+        - update: Modifying existing data (update, change, modify)
+        - delete: Removing data (delete, remove, cancel)
+        - unknown: Operation unclear
         
         Response format:
         {{
             "intent": "intent_name",
+            "operation": "operation_name",
             "confidence": 0.95,
             "reasoning": "Brief explanation"
         }}
@@ -218,27 +239,34 @@ class UnifiedAgentService:
                 
                 self.logger.info(f"Processed AI response: {ai_response}")
                 
-                # Extract intent data
+                # Extract intent and operation data
                 if isinstance(ai_response, dict):
                     intent_str = ai_response.get("intent", "unknown")
+                    operation_str = ai_response.get("operation", "unknown")
                     confidence = ai_response.get("confidence", 0.0)
                 else:
                     intent_str = "unknown"
+                    operation_str = "unknown"
                     confidence = 0.0
                 
-                # Map string to enum
+                # Map strings to enums
                 try:
                     intent = Intent(intent_str)
                 except ValueError:
                     intent = Intent.UNKNOWN
                     confidence = 0.0
                 
-                return intent, confidence
+                try:
+                    operation = Operation(operation_str)
+                except ValueError:
+                    operation = Operation.UNKNOWN
+                
+                return intent, operation, confidence
             
         except Exception as e:
             self.logger.error(f"Intent detection failed: {e}")
         
-        return Intent.UNKNOWN, 0.0
+        return Intent.UNKNOWN, Operation.UNKNOWN, 0.0
     
     async def _extract_data(
         self, 
@@ -438,17 +466,77 @@ class UnifiedAgentService:
     async def _generate_final_response(
         self, 
         intent: Intent, 
+        operation: Operation,
         data: Dict[str, Any], 
-        language: str
+        language: str,
+        user_id: str
     ) -> Dict[str, Any]:
         """
-        Generate the final response based on intent and extracted data
-        For now, returns dummy responses that match manual endpoint structure
+        Generate the final response based on intent, operation and extracted data
+        For GET operations, calls semantic kernel service to retrieve real data
+        For CREATE operations, returns dummy responses that match manual endpoint structure
         """
+        
+        # Handle GET operations by directly calling tool functions
+        if operation == Operation.GET:
+            try:
+                # Check if tools are initialized
+                if not self.sk_service.job_tools or not self.sk_service.invoice_tools or not self.sk_service.quote_tools:
+                    return {
+                        "success": False,
+                        "message": "Tools not initialized",
+                        "data": None
+                    }
+                
+                # Use tools from semantic kernel service
+                # Call appropriate GET method based on intent
+                if intent == Intent.JOB:
+                    result = await self.sk_service.job_tools.get_jobs()
+                elif intent == Intent.CUSTOMER:
+                    result = await self.sk_service.job_tools.get_clients()
+                elif intent == Intent.EXPENSE:
+                    result = await self.sk_service.job_tools.get_expenses()
+                elif intent == Intent.INVOICE:
+                    result = await self.sk_service.invoice_tools.get_invoices()
+                elif intent == Intent.QUOTE:
+                    result = await self.sk_service.quote_tools.get_quotes()
+                else:
+                    return {
+                        "success": False,
+                        "message": f"Unsupported GET operation for intent: {intent.value}",
+                        "data": None
+                    }
+                
+                # Parse the JSON result
+                if isinstance(result, str):
+                    try:
+                        result_data = json.loads(result)
+                    except json.JSONDecodeError:
+                        result_data = {"error": "Failed to parse result", "raw": result}
+                else:
+                    result_data = result
+                
+                return {
+                    "success": True,
+                    "message": f"Retrieved {intent.value}s successfully",
+                    "data": result_data,
+                    "intent": intent.value,
+                    "operation": operation.value,
+                    "timestamp": datetime.now().isoformat()
+                }
+                
+            except Exception as e:
+                self.logger.error(f"GET operation failed: {e}")
+                return {
+                    "success": False,
+                    "message": f"Failed to retrieve {intent.value}s: {str(e)}",
+                    "data": None
+                }
         base_response = {
             "success": True,
             "message": "Operation completed successfully",
             "intent": intent.value,
+            "operation": operation.value,
             "timestamp": datetime.now().isoformat()
         }
         

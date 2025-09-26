@@ -3,7 +3,7 @@ FastAPI routes for unified AI agent interactions
 Provides single endpoint for all AI agent operations with intelligent routing
 """
 
-from fastapi import APIRouter, HTTPException, Depends, Request, WebSocket, WebSocketDisconnect, UploadFile, File
+from fastapi import APIRouter, HTTPException, Depends, Request, WebSocket, WebSocketDisconnect, UploadFile, File, status
 from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
@@ -23,6 +23,8 @@ from services.semantic_kernel_service import SemanticKernelService
 from services.unified_agent_service import UnifiedAgentService
 from voice_services.unified_agent_service import UnifiedAgentService as VoiceUnifiedAgentService
 from voice_services.semantic_kernel_service import SemanticKernelService as VoiceSemanticKernelService
+from auth.dependencies import get_current_user_id_dependency
+from auth.jwt_auth import get_current_user_id
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -54,17 +56,16 @@ voice_unified_agent_service = None
 class UnifiedAgentRequest(BaseModel):
     """Unified request model for all AI agent interactions"""
     prompt: str
-    user_id: str
     language: str = "en"
     context: Optional[Dict[str, Any]] = None
 
 class ConversationStatusRequest(BaseModel):
     """Request model for conversation status"""
-    user_id: str
+    pass  # user_id will be extracted from JWT token
 
 class ConversationResetRequest(BaseModel):
     """Request model for conversation reset"""
-    user_id: str
+    pass  # user_id will be extracted from JWT token
 
 def get_sk_service(request: Request) -> SemanticKernelService:
     """Dependency to get Semantic Kernel service from app state"""
@@ -101,7 +102,8 @@ def get_voice_unified_agent_service(voice_sk_service: VoiceSemanticKernelService
 @agent_router.post("/process", response_model=Dict[str, Any])
 async def process_agent_request(
     request: UnifiedAgentRequest,
-    unified_service: UnifiedAgentService = Depends(get_unified_agent_service)
+    unified_service: UnifiedAgentService = Depends(get_unified_agent_service),
+    user_id: str = Depends(get_current_user_id_dependency)
 ):
     """
     Unified AI Agent Endpoint
@@ -123,30 +125,30 @@ async def process_agent_request(
     ```json
     {
         "prompt": "Create invoice for John Doe at ABC Corp for website development 40 hours at €50/hour",
-        "user_id": "user123",
         "language": "en"
     }
     
     {
         "prompt": "Add new customer: Jane Smith, email jane@example.com, phone 555-0123",
-        "user_id": "user123", 
         "language": "en"
     }
     
     {
         "prompt": "Schedule website maintenance for tomorrow at 2 PM, duration 3 hours",
-        "user_id": "user123",
         "language": "en"
     }
     ```
+    
+    Note: User authentication is handled via JWT token in the Authorization header.
+    The user_id is automatically extracted from the JWT token.
     """
     try:
-        logger.info(f"Processing unified agent request for user {request.user_id}: {request.prompt[:100]}...")
+        logger.info(f"Processing unified agent request for user {user_id}: {request.prompt[:100]}...")
         
         # Process the request through unified agent
         result = await unified_service.process_agent_request(
             prompt=request.prompt,
-            user_id=request.user_id,
+            user_id=user_id,
             language=request.language
         )
         
@@ -159,7 +161,8 @@ async def process_agent_request(
 @agent_router.post("/conversation/status")
 async def get_conversation_status(
     request: ConversationStatusRequest,
-    unified_service: UnifiedAgentService = Depends(get_unified_agent_service)
+    unified_service: UnifiedAgentService = Depends(get_unified_agent_service),
+    user_id: str = Depends(get_current_user_id_dependency)
 ):
     """
     Get current conversation status for a user
@@ -171,7 +174,7 @@ async def get_conversation_status(
     - Last update timestamp
     """
     try:
-        status = unified_service.get_conversation_status(request.user_id)
+        status = unified_service.get_conversation_status(user_id)
         return {
             "success": True,
             "data": status
@@ -184,7 +187,8 @@ async def get_conversation_status(
 @agent_router.post("/conversation/reset")
 async def reset_conversation(
     request: ConversationResetRequest,
-    unified_service: UnifiedAgentService = Depends(get_unified_agent_service)
+    unified_service: UnifiedAgentService = Depends(get_unified_agent_service),
+    user_id: str = Depends(get_current_user_id_dependency)
 ):
     """
     Reset conversation state for a user
@@ -195,7 +199,7 @@ async def reset_conversation(
     - Reset intent detection
     """
     try:
-        unified_service.reset_conversation(request.user_id)
+        unified_service.reset_conversation(user_id)
         return {
             "success": True,
             "message": "Conversation reset successfully"
@@ -238,7 +242,8 @@ async def agent_health_check(sk_service: SemanticKernelService = Depends(get_sk_
 @agent_router.post("/test")
 async def test_unified_agent(
     request: UnifiedAgentRequest,
-    unified_service: UnifiedAgentService = Depends(get_unified_agent_service)
+    unified_service: UnifiedAgentService = Depends(get_unified_agent_service),
+    user_id: str = Depends(get_current_user_id_dependency)
 ):
     """
     Test endpoint for unified AI agent
@@ -248,17 +253,17 @@ async def test_unified_agent(
         logger.info(f"Processing test request: {request.prompt[:100]}...")
         
         # Get conversation state before processing
-        pre_status = unified_service.get_conversation_status(request.user_id)
+        pre_status = unified_service.get_conversation_status(user_id)
         
         # Process the request
         result = await unified_service.process_agent_request(
             prompt=request.prompt,
-            user_id=request.user_id,
+            user_id=user_id,
             language=request.language
         )
         
         # Get conversation state after processing
-        post_status = unified_service.get_conversation_status(request.user_id)
+        post_status = unified_service.get_conversation_status(user_id)
         
         # Return debug information
         return {
@@ -266,7 +271,7 @@ async def test_unified_agent(
             "message": "Test completed successfully",
             "debug_info": {
                 "received_prompt": request.prompt,
-                "user_id": request.user_id,
+                "user_id": user_id,
                 "language": request.language,
                 "pre_processing_state": pre_status,
                 "post_processing_state": post_status,
@@ -284,23 +289,24 @@ async def test_unified_agent(
 @agent_router.websocket("/voice")
 async def voice_agent_websocket(
     websocket: WebSocket,
-    user_id: str,
+    token: str,
     language: str = "en"
 ):
     """
     WebSocket endpoint for voice-based AI agent interactions
     
     Workflow:
-    1. Accept WebSocket connection
-    2. Receive audio file from frontend
-    3. Transcribe audio using gpt_transcribe.py
-    4. Process the transcribed text through voice unified agent
-    5. Generate both structured response and human-friendly response
-    6. Convert human response to audio using gpt_tts.py
-    7. Send both structured data and audio file back to frontend
+    1. Accept WebSocket connection and validate JWT token
+    2. Extract user_id from JWT token
+    3. Receive audio file from frontend
+    4. Transcribe audio using gpt_transcribe.py
+    5. Process the transcribed text through voice unified agent
+    6. Generate both structured response and human-friendly response
+    7. Convert human response to audio using gpt_tts.py
+    8. Send both structured data and audio file back to frontend
     
     Parameters:
-        user_id: Unique identifier for the user
+        token: JWT token for authentication (user_id will be extracted from this)
         language: Language preference (en/fr)
     
     Message Format:
@@ -308,6 +314,13 @@ async def voice_agent_websocket(
     - Server sends: {"type": "response", "structured_data": {...}, "audio_url": "/path/to/audio.mp3", "human_text": "..."}
     """
     await websocket.accept()
+    
+    # Extract user_id from JWT token
+    user_id = get_current_user_id(token)
+    if user_id is None:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Invalid JWT token")
+        return
+    
     logger.info(f"WebSocket connection established for user {user_id}")
     
     try:
