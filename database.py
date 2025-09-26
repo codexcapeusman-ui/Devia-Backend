@@ -109,3 +109,9 @@ def get_invoices_collection():
 
 def get_quotes_collection():
     return db.database.quotes
+
+def get_jobs_collection():
+    return db.database.jobs
+
+def get_meetings_collection():
+    return db.database.meetings

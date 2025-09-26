@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     
     # Application Configuration
     app_host: str = "0.0.0.0"
-    app_port: int = 8000
+    app_port: int = 8001  # Changed from 8000 to avoid conflicts
     debug: bool = True
     
     # Database Configuration
