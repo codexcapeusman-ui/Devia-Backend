@@ -394,13 +394,185 @@ async def voice_agent_websocket(
         logger.error(f"WebSocket connection error: {e}")
         await websocket.close()
 
+
+# API endpoint for voice file upload and processing
+@agent_router.post("/voice-upload")
+async def voice_upload_api(
+    file: UploadFile = File(...),
+    language: str = "en",
+    user_id: str = Depends(get_current_user_id_dependency)
+):
+    """
+    API endpoint for voice file upload and processing
+
+    Workflow:
+    1. Accept voice file upload with JWT token authentication
+    2. Extract user_id from JWT token
+    3. Transcribe audio file to text
+    4. Process the transcribed text through voice unified agent
+    5. Generate both structured response and human-friendly response
+    6. Convert human response to audio
+    7. Return structured data, human text, and audio URL
+
+    Parameters:
+        file: Voice file upload (audio file)
+        language: Language preference (en/fr)
+        user_id: User identifier (extracted from JWT token)
+
+    Returns:
+        JSON response with:
+        - transcribed_text: The transcribed text from audio
+        - structured_data: Structured response from the agent
+        - human_text: Human-friendly response text
+        - audio_url: URL to the generated audio response
+    """
+    try:
+        # Check if audio services are available
+        if not audio_services_available:
+            raise HTTPException(
+                status_code=503,
+                detail="Audio processing services not available. Please check audio service setup."
+            )
+
+        # Validate file type
+        if not file.filename.lower().endswith(('.mp3', '.wav', '.m4a', '.flac', '.ogg')):
+            raise HTTPException(
+                status_code=400,
+                detail="Unsupported file format. Please upload MP3, WAV, M4A, FLAC, or OGG files."
+            )
+
+        # Read file content
+        audio_bytes = await file.read()
+
+        if len(audio_bytes) == 0:
+            raise HTTPException(status_code=400, detail="Empty file uploaded")
+
+        # Initialize voice services
+        voice_unified_service = None
+        audio_service = None
+
+        try:
+            # Create audio service
+            audio_service = UnifiedAudioService()
+
+            # Create voice services
+            from config.settings import Settings
+            settings = Settings()
+            voice_sk_service = VoiceSemanticKernelService(settings)
+            await voice_sk_service.initialize()
+            voice_unified_service = VoiceUnifiedAgentService(voice_sk_service)
+            logger.info("Voice and audio services initialized successfully")
+        except Exception as e:
+            logger.warning(f"Could not initialize voice services: {e}")
+            # Will use fallback processing with just audio service
+
+        # If we have voice_unified_service with audio capabilities, use it directly
+        if voice_unified_service and hasattr(voice_unified_service, 'process_audio_request'):
+            logger.info(f"Using voice unified service for complete audio processing")
+
+            result = await voice_unified_service.process_audio_request(
+                audio_bytes=audio_bytes,
+                user_id=user_id,
+                language=language,
+                audio_filename=file.filename
+            )
+
+            if result and result.get("success"):
+                return {
+                    "transcribed_text": result.get("transcribed_text", ""),
+                    "structured_data": result.get("structured_response", {}),
+                    "human_text": result.get("human_response", ""),
+                    "audio_url": f"/agent/audio/{Path(result.get('audio_url', '')).name}" if result.get('audio_url') else None
+                }
+            else:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Voice processing failed: {result.get('error', 'Unknown error')}"
+                )
+
+        # Fallback: Use audio_service for individual steps
+        if not audio_service:
+            raise HTTPException(
+                status_code=503,
+                detail="Audio processing service not available"
+            )
+
+        # Save uploaded file temporarily
+        with tempfile.NamedTemporaryFile(suffix=f".{file.filename.split('.')[-1]}", delete=False) as temp_audio:
+            temp_audio.write(audio_bytes)
+            temp_audio_path = temp_audio.name
+
+        try:
+            # Step 1: Transcribe audio using audio service
+            logger.info(f"Transcribing audio for user {user_id}")
+            transcription_result = await audio_service.transcribe_file(temp_audio_path, language=language)
+
+            if not transcription_result or not transcription_result.get("success"):
+                raise HTTPException(status_code=500, detail="Failed to transcribe audio")
+
+            transcribed_text = transcription_result["text"]
+            logger.info(f"Transcription successful: {transcribed_text[:100]}...")
+
+            # Step 2: Process through voice unified agent
+            structured_response = await process_with_voice_agent(
+                transcribed_text, user_id, language, voice_unified_service
+            )
+
+            # Step 3: Generate human-friendly response
+            human_response = ""
+            if voice_unified_service:
+                # Use the voice service's enhanced human response generation
+                human_response = voice_unified_service.generate_human_friendly_response(structured_response)
+            else:
+                # Fallback to the simple human response generation
+                human_response = generate_human_response(structured_response)
+
+            # Step 4: Convert human response to audio using audio service
+            audio_filename = f"response_{user_id}_{int(asyncio.get_event_loop().time())}.mp3"
+            audio_path = f"temp/{audio_filename}"
+
+            # Ensure temp directory exists
+            os.makedirs("temp", exist_ok=True)
+
+            tts_result = await audio_service.synthesize_text(
+                text=human_response,
+                voice="alloy",
+                output_path=audio_path
+            )
+
+            if not tts_result or not tts_result.get("success"):
+                raise HTTPException(status_code=500, detail="Failed to generate audio response")
+
+            # Step 5: Return complete response
+            return {
+                "transcribed_text": transcribed_text,
+                "structured_data": structured_response,
+                "human_text": human_response,
+                "audio_url": f"/agent/audio/{audio_filename}"
+            }
+
+        finally:
+            # Clean up temporary audio file
+            if os.path.exists(temp_audio_path):
+                os.unlink(temp_audio_path)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in voice upload API: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error processing voice upload: {str(e)}"
+        )
+
+
 async def process_voice_message(
     websocket: WebSocket,
     message: Dict[str, Any],
     user_id: str,
     language: str,
     voice_unified_service: Optional[VoiceUnifiedAgentService],
-    audio_service: Optional["UnifiedAudioService"] = None
+    audio_service: Optional[Any] = None
 ):
     """
     Process a voice message through the complete workflow

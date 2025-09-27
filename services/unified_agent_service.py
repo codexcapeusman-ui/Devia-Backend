@@ -92,25 +92,61 @@ class UnifiedAgentService:
             conversation = self._get_conversation_state(user_id)
             self.logger.info(f"Conversation state: {conversation['state']}, attempt: {conversation.get('missing_data_attempts', 0)}")
             
-            # Step 1: Intent Detection (if not already detected)
+            # Quick user commands: reset/cancel/start over
+            lower_prompt = prompt.strip().lower()
+            if any(cmd in lower_prompt for cmd in ["never mind", "cancel", "start over", "reset", "stop"]):
+                # Reset conversation and ask for clarification
+                self.reset_conversation(user_id)
+                conversation = self._get_conversation_state(user_id)
+                return {
+                    "success": True,
+                    "message": "Conversation reset. How can I help you now?",
+                    "action": "reset"
+                }
+
+            # Step 1: Intent Detection (for new conversations)
             if conversation["state"] == ConversationState.INTENT_DETECTION:
                 intent, operation, confidence = await self._detect_intent(prompt, language)
                 conversation["intent"] = intent
                 conversation["operation"] = operation
                 conversation["confidence"] = confidence
                 conversation["data"] = {}
-                
+
                 self.logger.info(f"Intent detection result: intent={intent}, operation={operation}, confidence={confidence}")
-                
+
                 if intent == Intent.UNKNOWN or confidence < 0.1:
                     self.logger.warning(f"Intent unclear or low confidence: {intent}, {confidence}")
                     return self._create_clarification_response(conversation, language)
-                
+
                 # For GET operations, skip data extraction and go directly to response generation
                 if operation == Operation.GET:
                     conversation["state"] = ConversationState.RESPONSE_GENERATION
                 else:
                     conversation["state"] = ConversationState.DATA_EXTRACTION
+
+            else:
+                # If we're mid-conversation, check whether the user has changed their intent/operation.
+                try:
+                    new_intent, new_operation, new_confidence = await self._detect_intent(prompt, language)
+                    # If the new intent/operation is different and confidence is reasonably high, switch flows
+                    if new_intent != conversation.get("intent") and new_confidence >= 0.6:
+                        self.logger.info(f"User changed intent mid-flow from {conversation.get('intent')} to {new_intent} (conf={new_confidence})")
+                        conversation["intent"] = new_intent
+                        conversation["operation"] = new_operation
+                        conversation["confidence"] = new_confidence
+                        # Reset collected data but keep it optional to be merged later if fields overlap
+                        conversation["data"] = {}
+                        conversation["missing_data_attempts"] = 0
+                        conversation["state"] = ConversationState.RESPONSE_GENERATION if new_operation == Operation.GET else ConversationState.DATA_EXTRACTION
+                    else:
+                        # If user explicitly asks a GET while mid-flow, allow immediate GET
+                        if new_operation == Operation.GET and new_confidence >= 0.4:
+                            self.logger.info(f"Switching to GET operation mid-flow (confidence {new_confidence})")
+                            conversation["operation"] = Operation.GET
+                            conversation["state"] = ConversationState.RESPONSE_GENERATION
+                except Exception:
+                    # If intent re-detection fails, continue with existing flow
+                    self.logger.debug("Intent re-detection failed while mid-conversation; continuing existing flow")
             
             # Step 2: Data Extraction (initial or additional data)
             if conversation["state"] in [ConversationState.DATA_EXTRACTION, ConversationState.DATA_COMPLETION]:
@@ -159,7 +195,23 @@ class UnifiedAgentService:
                 
                 return response
             
-            # Fallback
+            # Fallback: attempt quick re-detection instead of failing immediately
+            # This improves resilience when conversation state becomes inconsistent.
+            try:
+                alt_intent, alt_operation, alt_conf = await self._detect_intent(prompt, language)
+                if alt_intent != Intent.UNKNOWN and alt_conf >= 0.2:
+                    # Reset conversation to new intent and restart flow
+                    conversation["intent"] = alt_intent
+                    conversation["operation"] = alt_operation
+                    conversation["confidence"] = alt_conf
+                    conversation["data"] = {}
+                    conversation["missing_data_attempts"] = 0
+                    conversation["state"] = ConversationState.RESPONSE_GENERATION if alt_operation == Operation.GET else ConversationState.DATA_EXTRACTION
+                    # Re-run the processing loop recursively (one level) by calling process_agent_request again
+                    return await self.process_agent_request(prompt, user_id, language)
+            except Exception:
+                self.logger.debug("Fallback re-detection attempt failed")
+
             return self._create_error_response("Invalid conversation state", language)
             
         except Exception as e:
