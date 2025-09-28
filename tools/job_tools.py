@@ -373,9 +373,9 @@ class JobTools:
         name="get_jobs"
     )
     async def get_jobs(self, 
+                user_id: str,
                 skip: int = 0, 
                 limit: int = 100, 
-                user_id: Optional[str] = None,
                 client_id: Optional[str] = None,
                 assigned_to: Optional[str] = None,
                 status: Optional[str] = None,
@@ -385,9 +385,9 @@ class JobTools:
         Retrieve jobs from database with filtering
         
         Args:
+            user_id: User ID (required for security)
             skip: Number of jobs to skip for pagination
             limit: Maximum number of jobs to return
-            user_id: Filter by user ID (required for security)
             client_id: Filter by client ID
             assigned_to: Filter by assigned user ID
             status: Filter by job status (scheduled, in_progress, completed, cancelled)
@@ -409,10 +409,8 @@ class JobTools:
             jobs_collection = get_jobs_collection()
             
             # Build query filter
-            query = {}
+            query = {"userId": user_id}
             
-            if user_id:
-                query["userId"] = user_id
             if client_id:
                 query["clientId"] = client_id
             if assigned_to:
@@ -468,13 +466,13 @@ class JobTools:
         description="Get a specific job by ID from database - returns actual data",
         name="get_job_by_id"
     )
-    def get_job_by_id(self, job_id: str, user_id: Optional[str] = None) -> str:
+    def get_job_by_id(self, job_id: str, user_id: str) -> str:
         """
         Retrieve a specific job by its ID from database
         
         Args:
             job_id: The job ID to retrieve
-            user_id: Filter by user ID (required for security)
+            user_id: User ID (required for security)
             
         Returns:
             JSON string containing actual job data from database
@@ -496,9 +494,7 @@ class JobTools:
                 return json.dumps({"error": "Invalid job ID format", "job": None})
             
             # Build query with user_id filter
-            query = {"_id": object_id}
-            if user_id:
-                query["userId"] = user_id
+            query = {"_id": object_id, "userId": user_id}
             
             job = await jobs_collection.find_one(query)
             
@@ -1469,7 +1465,8 @@ class JobTools:
                    skip: int = 0,
                    limit: int = 100,
                    search: Optional[str] = None,
-                   status_filter: Optional[str] = None) -> str:
+                   status_filter: Optional[str] = None,
+                   user_id: Optional[str] = None) -> str:
         """
         Retrieve clients from database with filtering
         
@@ -1478,22 +1475,27 @@ class JobTools:
             limit: Maximum number of clients to return
             search: Search text to filter by name, email, or company
             status_filter: Filter by status (active, delinquent, archived)
+            user_id: Filter by user ID to get only clients belonging to this user
             
         Returns:
             JSON string containing actual clients data from database
         """
         try:
-            return await self._get_clients_async(skip, limit, search, status_filter)
+            return await self._get_clients_async(skip, limit, search, status_filter, user_id)
         except Exception as e:
             return json.dumps({"error": f"Failed to get clients: {str(e)}", "clients": [], "total": 0})
 
-    async def _get_clients_async(self, skip, limit, search, status_filter):
+    async def _get_clients_async(self, skip, limit, search, status_filter, user_id=None):
         """Async implementation for getting clients"""
         try:
             clients_collection = get_clients_collection()
             
             # Build query filter
             query = {}
+            
+            # Add user_id filtering if provided
+            if user_id:
+                query["user_id"] = user_id
             
             if search:
                 query["$or"] = [
@@ -2012,9 +2014,9 @@ class JobTools:
         
         # Extract client/company name
         client_patterns = [
-            r'(?:for|with|client)\\s+([A-Z][a-z]+(?:\\s+[A-Z][a-z]+)*)',
-            r'([A-Z][a-z]+(?:\\s+[A-Z][a-z]+)*)\\s+(?:corp|company|inc|ltd)',
-            r'(?:at|for)\\s+([A-Z][a-z]+(?:\\s+[A-Z][a-z]+)*)(?:\\s+office|\\s+location)?'
+            r'(?:for|with|client)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)',
+            r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s+(?:corp|company|inc|ltd)',
+            r'(?:at|for)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)(?:\s+office|\s+location)?'
         ]
         
         for pattern in client_patterns:
@@ -2047,23 +2049,23 @@ class JobTools:
         """Find time-related expressions in text"""
         time_patterns = [
             # Relative day expressions
-            r'\\b(?:next|this)\\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\\b',
-            r'\\b(?:tomorrow|today)\\b',
-            r'\\b(?:in|after)\\s+\\d+\\s+(?:days?|weeks?|months?)\\b',
+            r'\b(?:next|this)\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b',
+            r'\b(?:tomorrow|today)\b',
+            r'\b(?:in|after)\s+\d+\s+(?:days?|weeks?|months?)\b',
             
             # Specific date patterns
-            r'\\b\\d{1,2}[/-]\\d{1,2}[/-]\\d{2,4}\\b',
-            r'\\b(?:january|february|march|april|may|june|july|august|september|october|november|december)\\s+\\d{1,2}\\b',
+            r'\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b',
+            r'\b(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2}\b',
             
             # Time patterns
-            r'\\b\\d{1,2}\\s*:?\\s*\\d{0,2}\\s*(?:am|pm|AM|PM)\\b',
-            r'\\b(?:at|around)\\s+\\d{1,2}\\s*(?:am|pm|AM|PM|:00|:30)?\\b',
+            r'\b\d{1,2}\s*:?\s*\d{0,2}\s*(?:am|pm|AM|PM)\b',
+            r'\b(?:at|around)\s+\d{1,2}\s*(?:am|pm|AM|PM|:00|:30)?\b',
             
             # Duration patterns
-            r'\\b(?:for|during)\\s+\\d+\\s*(?:hours?|minutes?|hrs?)\\b',
+            r'\b(?:for|during)\s+\d+\s*(?:hours?|minutes?|hrs?)\b',
             
             # Combined expressions
-            r'\\b(?:next|this)\\s+\\w+\\s+at\\s+\\d{1,2}\\s*(?:am|pm|AM|PM)\\b'
+            r'\b(?:next|this)\s+\w+\s+at\s+\d{1,2}\s*(?:am|pm|AM|PM)\b'
         ]
         
         expressions = []

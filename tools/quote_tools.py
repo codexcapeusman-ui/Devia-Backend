@@ -269,15 +269,15 @@ class QuoteTools:
         description="Get all quotes with optional filtering and search",
         name="get_quotes"
     )
-    async def get_quotes(self, search: str = "", status_filter: str = "", client_id: str = "", user_id: Optional[str] = None, skip: int = 0, limit: int = 100) -> str:
+    async def get_quotes(self, user_id: str, search: str = "", status_filter: str = "", client_id: str = "", skip: int = 0, limit: int = 100) -> str:
         """
         Retrieve a list of quotes with optional filtering
         
         Args:
+            user_id: User ID (required for security)
             search: Optional search text to filter by quote number or client ID
             status_filter: Filter by status: draft, sent, accepted, rejected, expired
             client_id: Filter by client ID
-            user_id: Filter by user ID (required for security)
             skip: Number of quotes to skip
             limit: Maximum number of quotes to return
             
@@ -311,9 +311,8 @@ class QuoteTools:
             if client_id:
                 query_dict["clientId"] = client_id
 
-            # Add user ID filter
-            if user_id:
-                query_dict["userId"] = user_id
+            # Add user ID filter (required for security)
+            query_dict["userId"] = user_id
 
             # Get total count
             total = await quotes_collection.count_documents(query_dict)
@@ -355,13 +354,13 @@ class QuoteTools:
         description="Get a specific quote by ID",
         name="get_quote_by_id"
     )
-    async def get_quote_by_id(self, quote_id: str, user_id: Optional[str] = None) -> str:
+    async def get_quote_by_id(self, quote_id: str, user_id: str) -> str:
         """
         Retrieve a specific quote by ID
         
         Args:
             quote_id: Quote ID to retrieve
-            user_id: Filter by user ID (required for security)
+            user_id: User ID (required for security)
             
         Returns:
             JSON string containing the quote details
@@ -373,12 +372,13 @@ class QuoteTools:
             quotes_collection = get_quotes_collection()
 
             try:
-                query = {"_id": ObjectId(quote_id)}
-                if user_id:
-                    query["userId"] = user_id
+                query = {"_id": ObjectId(quote_id), "userId": user_id}
                 quote_doc = await quotes_collection.find_one(query)
-            except:
-                return json.dumps({"error": "Invalid quote ID format"})
+            except Exception as e:
+                if "InvalidId" in str(e):
+                    return json.dumps({"error": "Invalid quote ID format"})
+                else:
+                    raise
 
             if not quote_doc:
                 return json.dumps({"error": "Quote not found"})
@@ -570,9 +570,9 @@ class QuoteTools:
         """
         Generate a unique quote number
         """
-        current_year = datetime.now().year
-        timestamp_suffix = int(datetime.now().timestamp()) % 10000
-        return f"DEV-{current_year}-{timestamp_suffix:04d}"
+        current_year = datetime.now().strftime('%Y')
+        unique_suffix = str(uuid.uuid4().hex)[:6].upper()
+        return f"DEV-{current_year}-{unique_suffix}"
 
     def _extract_items_from_description(self, description: str) -> List[Dict[str, Any]]:
         """
@@ -1244,10 +1244,10 @@ class QuoteTools:
     
     def _generate_quote_number(self, suffix: str = "") -> str:
         """Generate a unique quote number"""
-        current_year = datetime.now().year
-        timestamp_suffix = int(datetime.now().timestamp()) % 10000
+        current_year = datetime.now().strftime('%Y')
+        unique_suffix = str(uuid.uuid4().hex)[:6].upper()
         
-        base_number = f"QUO-{current_year}-{timestamp_suffix:04d}"
+        base_number = f"QUO-{current_year}-{unique_suffix}"
         
         if suffix:
             base_number += f"-{suffix}"

@@ -184,14 +184,14 @@ class ClientTools:
         description="Get all clients with optional filtering and search",
         name="get_clients"
     )
-    async def get_clients(self, search: str = "", status_filter: str = "", user_id: Optional[str] = None, skip: int = 0, limit: int = 100) -> str:
+    async def get_clients(self, user_id: str, search: str = "", status_filter: str = "", skip: int = 0, limit: int = 100) -> str:
         """
         Retrieve a list of clients with optional filtering
         
         Args:
+            user_id: User ID (required for security)
             search: Optional search text to filter by name, email, or company
             status_filter: Filter by status: active, delinquent, archived
-            user_id: Filter by user ID (required for security)
             skip: Number of clients to skip
             limit: Maximum number of clients to return
             
@@ -203,28 +203,7 @@ class ClientTools:
             from bson import ObjectId
             
             clients_collection = get_clients_collection()
-            query_dict = {}
-
-            # Add search filter
-            if search:
-                import re
-                regex = re.compile(re.escape(search), re.IGNORECASE)
-                query_dict["$or"] = [
-                    {"name": {"$regex": regex}},
-                    {"email": {"$regex": regex}},
-                    {"company": {"$regex": regex}}
-                ]
-
-            # Add status filter
-            if status_filter:
-                valid_statuses = ["active", "delinquent", "archived"]
-                if status_filter not in valid_statuses:
-                    return json.dumps({"error": f"Invalid status filter: {status_filter}"})
-                query_dict["status"] = status_filter
-
-            # Add user ID filter
-            if user_id:
-                query_dict["userId"] = user_id
+            query_dict = {"userId": user_id}  # Always filter by user_id for security
 
             # Get total count
             total = await clients_collection.count_documents(query_dict)
@@ -244,8 +223,8 @@ class ClientTools:
                     "balance": client_doc.get("balance", 0.0),
                     "status": client_doc.get("status", "active"),
                     "notes": client_doc.get("notes"),
-                    "created_at": client_doc.get("created_at", "").isoformat() if isinstance(client_doc.get("created_at"), datetime) else client_doc.get("created_at", ""),
-                    "updated_at": client_doc.get("updated_at", "").isoformat() if isinstance(client_doc.get("updated_at"), datetime) else client_doc.get("updated_at", "")
+                    "created_at": client_doc.get("created_at").isoformat() if isinstance(client_doc.get("created_at"), datetime) else None,
+                    "updated_at": client_doc.get("updated_at").isoformat() if isinstance(client_doc.get("updated_at"), datetime) else None
                 }
                 clients.append(client_response)
 
@@ -263,13 +242,13 @@ class ClientTools:
         description="Get a specific client by ID",
         name="get_client_by_id"
     )
-    async def get_client_by_id(self, client_id: str, user_id: Optional[str] = None) -> str:
+    async def get_client_by_id(self, client_id: str, user_id: str) -> str:
         """
         Retrieve a specific client by ID
         
         Args:
             client_id: Client ID to retrieve
-            user_id: Filter by user ID (required for security)
+            user_id: User ID (required for security)
             
         Returns:
             JSON string containing the client details
@@ -277,15 +256,14 @@ class ClientTools:
         try:
             from database import get_clients_collection
             from bson import ObjectId
+            from bson.errors import InvalidId
             
             clients_collection = get_clients_collection()
 
             try:
-                query = {"_id": ObjectId(client_id)}
-                if user_id:
-                    query["userId"] = user_id
+                query = {"_id": ObjectId(client_id), "userId": user_id}  # Always include user_id for security
                 client_doc = await clients_collection.find_one(query)
-            except:
+            except InvalidId:
                 return json.dumps({"error": "Invalid client ID format"})
 
             if not client_doc:
@@ -302,8 +280,8 @@ class ClientTools:
                 "balance": client_doc.get("balance", 0.0),
                 "status": client_doc.get("status", "active"),
                 "notes": client_doc.get("notes"),
-                "created_at": client_doc.get("created_at", "").isoformat() if isinstance(client_doc.get("created_at"), datetime) else client_doc.get("created_at", ""),
-                "updated_at": client_doc.get("updated_at", "").isoformat() if isinstance(client_doc.get("updated_at"), datetime) else client_doc.get("updated_at", "")
+                "created_at": client_doc.get("created_at").isoformat() if isinstance(client_doc.get("created_at"), datetime) else None,
+                "updated_at": client_doc.get("updated_at").isoformat() if isinstance(client_doc.get("updated_at"), datetime) else None
             }
 
             response = {
@@ -315,78 +293,9 @@ class ClientTools:
         except Exception as e:
             return json.dumps({"error": f"Failed to get client: {str(e)}"})
 
-    @kernel_function(
-        description="Search clients by various criteria",
-        name="search_clients"
-    )
-    async def search_clients(self, query: str, search_type: str = "all") -> str:
-        """
-        Search clients by name, email, company, or phone
-        
-        Args:
-            query: Search query text
-            search_type: Type of search (name, email, company, phone, all)
-            
-        Returns:
-            JSON string containing matching clients
-        """
-        try:
-            from database import get_clients_collection
-            
-            clients_collection = get_clients_collection()
-            
-            # Build search query based on type
-            search_dict = {}
-            regex = re.compile(re.escape(query), re.IGNORECASE)
-            
-            if search_type == "name":
-                search_dict["name"] = {"$regex": regex}
-            elif search_type == "email":
-                search_dict["email"] = {"$regex": regex}
-            elif search_type == "company":
-                search_dict["company"] = {"$regex": regex}
-            elif search_type == "phone":
-                search_dict["phone"] = {"$regex": regex}
-            else:  # search_type == "all"
-                search_dict["$or"] = [
-                    {"name": {"$regex": regex}},
-                    {"email": {"$regex": regex}},
-                    {"company": {"$regex": regex}},
-                    {"phone": {"$regex": regex}}
-                ]
-
-            # Get matching clients
-            clients_cursor = clients_collection.find(search_dict).sort("name", 1)
-            clients = []
-            async for client_doc in clients_cursor:
-                client_response = {
-                    "id": str(client_doc["_id"]),
-                    "name": client_doc.get("name", ""),
-                    "email": client_doc.get("email", ""),
-                    "phone": client_doc.get("phone", ""),
-                    "address": client_doc.get("address", ""),
-                    "company": client_doc.get("company"),
-                    "balance": client_doc.get("balance", 0.0),
-                    "status": client_doc.get("status", "active"),
-                    "notes": client_doc.get("notes"),
-                    "created_at": client_doc.get("created_at", "").isoformat() if isinstance(client_doc.get("created_at"), datetime) else client_doc.get("created_at", ""),
-                    "updated_at": client_doc.get("updated_at", "").isoformat() if isinstance(client_doc.get("updated_at"), datetime) else client_doc.get("updated_at", "")
-                }
-                clients.append(client_response)
-
-            response = {
-                "clients": clients,
-                "total": len(clients),
-                "query": query,
-                "search_type": search_type
-            }
-            
-            return json.dumps(response, indent=2)
-            
-        except Exception as e:
-            return json.dumps({"error": f"Failed to search clients: {str(e)}"})
-
     # ===== HELPER METHODS =====
+    # NOTE: These regex-based extraction methods are brittle and may fail on unexpected input formats.
+    # Consider deprecating in favor of LLM-powered extraction for better reliability.
 
     def _extract_balance_from_description(self, description: str) -> Optional[float]:
         """

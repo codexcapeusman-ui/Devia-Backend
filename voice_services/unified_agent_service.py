@@ -12,6 +12,12 @@ from enum import Enum
 
 from services.semantic_kernel_service import SemanticKernelService
 from .unified_audio_service import UnifiedAudioService
+from tools.client_tools import ClientTools
+from tools.invoice_tools import InvoiceTools
+from tools.quote_tools import QuoteTools
+from tools.job_tools import JobTools
+from tools.expense_tools import ExpenseTools
+from config.settings import Settings
 
 class Intent(str, Enum):
     """Supported intents for AI agent"""
@@ -45,9 +51,22 @@ class UnifiedAgentService:
     Workflow: Audio -> Transcription -> Intent Detection -> Data Extraction -> Response -> TTS
     """
     
-    def __init__(self, sk_service: SemanticKernelService):
+    def __init__(self, sk_service: SemanticKernelService, settings: Settings = None):
         self.sk_service = sk_service
         self.logger = logging.getLogger(__name__)
+        
+        # Initialize settings
+        if settings is None:
+            from config.settings import Settings
+            settings = Settings()
+        self.settings = settings
+        
+        # Initialize tools
+        self.client_tools = ClientTools(settings)
+        self.invoice_tools = InvoiceTools(settings)
+        self.quote_tools = QuoteTools(settings)
+        self.job_tools = JobTools(settings)
+        self.expense_tools = ExpenseTools(settings)
         
         # Initialize audio service for voice processing (loads API key from settings)
         try:
@@ -120,18 +139,23 @@ class UnifiedAgentService:
 
             # Step 1: Intent Detection (if not already detected)
             if conversation["state"] == ConversationState.INTENT_DETECTION:
-                intent, confidence = await self._detect_intent(prompt, language)
+                intent, operation, confidence = await self._detect_intent(prompt, language)
                 conversation["intent"] = intent
+                conversation["operation"] = operation
                 conversation["confidence"] = confidence
                 conversation["data"] = {}
                 
-                self.logger.info(f"Intent detection result: intent={intent}, confidence={confidence}")
+                self.logger.info(f"Intent detection result: intent={intent}, operation={operation}, confidence={confidence}")
                 
-                if intent == Intent.UNKNOWN or confidence < 0.1:
+                # Special handling for "get all" queries - skip data extraction entirely
+                if operation == Operation.GET and self._is_get_all_query(prompt):
+                    self.logger.info(f"Detected 'get all' query for {intent.value}, skipping to response generation")
+                    conversation["state"] = ConversationState.RESPONSE_GENERATION
+                elif intent == Intent.UNKNOWN or confidence < 0.1:
                     self.logger.warning(f"Intent unclear or low confidence: {intent}, {confidence}")
                     return self._create_clarification_response(conversation, language)
-                
-                conversation["state"] = ConversationState.DATA_EXTRACTION
+                else:
+                    conversation["state"] = ConversationState.DATA_EXTRACTION
             
             else:
                 # If we're mid-conversation, check whether the user has changed their intent.
@@ -139,11 +163,22 @@ class UnifiedAgentService:
                 # misinterpreting missing data inputs as new intents)
                 if conversation["state"] not in [ConversationState.DATA_EXTRACTION, ConversationState.DATA_COMPLETION]:
                     try:
-                        new_intent, new_confidence = await self._detect_intent(prompt, language)
-                        # If the new intent is different and confidence is reasonably high, switch flows
-                        if new_intent != conversation.get("intent") and new_confidence >= 0.6:
+                        new_intent, new_operation, new_confidence = await self._detect_intent(prompt, language)
+                        
+                        # Special handling for "get all" queries - always switch to this flow
+                        if new_operation == Operation.GET and self._is_get_all_query(prompt):
+                            self.logger.info(f"Detected 'get all' query mid-conversation for {new_intent.value}, switching to direct response")
+                            conversation["intent"] = new_intent
+                            conversation["operation"] = new_operation
+                            conversation["confidence"] = new_confidence
+                            conversation["data"] = {}
+                            conversation["state"] = ConversationState.RESPONSE_GENERATION
+                        
+                        # If the new intent/operation is different and confidence is reasonably high, switch flows
+                        elif new_intent != conversation.get("intent") and new_confidence >= 0.6:
                             self.logger.info(f"User changed intent mid-flow from {conversation.get('intent')} to {new_intent} (conf={new_confidence})")
                             conversation["intent"] = new_intent
+                            conversation["operation"] = new_operation
                             conversation["confidence"] = new_confidence
                             # Reset collected data but keep it optional to be merged later if fields overlap
                             conversation["data"] = {}
@@ -156,7 +191,7 @@ class UnifiedAgentService:
             # Step 2: Data Extraction (initial or additional data)
             if conversation["state"] in [ConversationState.DATA_EXTRACTION, ConversationState.DATA_COMPLETION]:
                 extracted_data = await self._extract_data(
-                    prompt, conversation["intent"], language
+                    prompt, conversation["intent"], conversation.get("operation", Operation.UNKNOWN), language
                 )
                 
                 # Merge data intelligently - preserve existing valid data
@@ -166,7 +201,7 @@ class UnifiedAgentService:
             # Step 3: Check for Missing Data
             if conversation["state"] == ConversationState.DATA_COMPLETION:
                 missing_fields = self._check_missing_data(
-                    conversation["intent"], conversation["data"]
+                    conversation["intent"], conversation.get("operation", Operation.UNKNOWN), conversation["data"]
                 )
                 
                 if missing_fields:
@@ -194,7 +229,7 @@ class UnifiedAgentService:
             # Step 4: Generate Final Response
             if conversation["state"] == ConversationState.RESPONSE_GENERATION:
                 response = await self._generate_final_response(
-                    conversation["intent"], conversation["data"], language
+                    conversation["intent"], conversation.get("operation", Operation.UNKNOWN), conversation["data"], language, user_id
                 )
                 conversation["state"] = ConversationState.COMPLETED
                 
@@ -207,7 +242,7 @@ class UnifiedAgentService:
             self.logger.error(f"Error processing agent request: {e}")
             return self._create_error_response(str(e), language)
     
-    async def _detect_intent(self, prompt: str, language: str) -> Tuple[Intent, float]:
+    async def _detect_intent(self, prompt: str, language: str) -> Tuple[Intent, Operation, float]:
         """
         Detect user intent from the prompt using AI
         
@@ -215,21 +250,42 @@ class UnifiedAgentService:
             Tuple of (intent, confidence_score)
         """
         intent_prompt = f"""
-        Analyze this user prompt and determine their intent. Respond with JSON only.
+        Analyze this user prompt and determine their intent and operation. Respond with JSON only.
         
         User prompt: "{prompt}"
         
+        IMPORTANT: If the user is asking to VIEW/SHOW/LIST/GET existing data, use operation "get".
+        If the user is asking to CREATE/ADD new data, use operation "create".
+        
         Available intents:
-        - invoice: Creating, generating, or managing invoices
-        - quote: Creating, generating, or managing quotes/estimates
-        - customer: Adding, updating, or managing customer data
-        - job: Scheduling, creating, or managing jobs/appointments
-        - expense: Tracking, adding, or managing expenses
+        - invoice: Related to invoices, billing, payments
+        - quote: Related to quotes/estimates, proposals, pricing
+        - customer: Related to customer data, clients, contacts
+        - job: Related to jobs/appointments, scheduling, tasks, meetings
+        - expense: Related to expenses, costs, receipts, spending
         - unknown: Intent unclear or not supported
+        
+        Available operations:
+        - get: Retrieving/viewing existing data (show, list, get, display, find, see, view, retrieve, "all my", "my clients", "my invoices")
+        - create: Creating new data (create, add, schedule, book, make, generate, "new client", "add client")
+        - update: Modifying existing data (update, change, modify, edit, adjust)
+        - delete: Removing data (delete, remove, cancel, eliminate)
+        - unknown: Operation unclear
+        
+        Examples:
+        - "show all my clients" -> customer, get
+        - "i want to see all my current clients" -> customer, get
+        - "list my invoices" -> invoice, get
+        - "get my jobs" -> job, get
+        - "display my expenses" -> expense, get
+        - "create new client" -> customer, create
+        - "add a new invoice" -> invoice, create
+        - "schedule meeting" -> job, create
         
         Response format:
         {{
             "intent": "intent_name",
+            "operation": "operation_name", 
             "confidence": 0.95,
             "reasoning": "Brief explanation"
         }}
@@ -272,12 +328,14 @@ class UnifiedAgentService:
                 
                 self.logger.info(f"Processed AI response: {ai_response}")
                 
-                # Extract intent data
+                # Extract intent and operation data
                 if isinstance(ai_response, dict):
                     intent_str = ai_response.get("intent", "unknown")
+                    operation_str = ai_response.get("operation", "unknown")
                     confidence = ai_response.get("confidence", 0.0)
                 else:
                     intent_str = "unknown"
+                    operation_str = "unknown"
                     confidence = 0.0
                 
                 # Map string to enum
@@ -287,22 +345,56 @@ class UnifiedAgentService:
                     intent = Intent.UNKNOWN
                     confidence = 0.0
                 
-                return intent, confidence
+                try:
+                    operation = Operation(operation_str)
+                except ValueError:
+                    operation = Operation.UNKNOWN
+                
+                return intent, operation, confidence
             
         except Exception as e:
             self.logger.error(f"Intent detection failed: {e}")
         
-        return Intent.UNKNOWN, 0.0
+        # Fallback: Simple pattern matching for common GET operations
+        prompt_lower = prompt.lower()
+        
+        # Check for common GET patterns
+        if any(word in prompt_lower for word in ["show", "list", "get", "display", "see", "view", "all my", "my clients", "my invoices", "my jobs", "my expenses", "my quotes"]):
+            if any(word in prompt_lower for word in ["client", "customer", "contact"]):
+                return Intent.CUSTOMER, Operation.GET, 0.8
+            elif any(word in prompt_lower for word in ["invoice", "bill", "billing"]):
+                return Intent.INVOICE, Operation.GET, 0.8
+            elif any(word in prompt_lower for word in ["job", "appointment", "meeting", "schedule"]):
+                return Intent.JOB, Operation.GET, 0.8
+            elif any(word in prompt_lower for word in ["expense", "cost", "spending"]):
+                return Intent.EXPENSE, Operation.GET, 0.8
+            elif any(word in prompt_lower for word in ["quote", "estimate", "proposal"]):
+                return Intent.QUOTE, Operation.GET, 0.8
+        
+        return Intent.UNKNOWN, Operation.UNKNOWN, 0.0
     
     async def _extract_data(
         self, 
         prompt: str, 
         intent: Intent, 
+        operation: Operation,
         language: str
     ) -> Dict[str, Any]:
         """
         Extract relevant data fields based on the detected intent
         """
+        # Check if this is a specific ID query
+        if self._is_specific_id_query(prompt, intent):
+            return self._extract_id_from_prompt(prompt, intent)
+        
+        # For GET operations, we don't need to extract data beyond IDs
+        if operation == Operation.GET:
+            return {
+                "extracted_data": {},
+                "confidence": 1.0,
+                "missing_fields": []
+            }
+        
         extraction_prompts = {
             Intent.INVOICE: """
             Extract invoice data from this prompt. Return JSON with these fields:
@@ -476,10 +568,15 @@ class UnifiedAgentService:
         
         return True
     
-    def _check_missing_data(self, intent: Intent, data: Dict[str, Any]) -> List[str]:
+    def _check_missing_data(self, intent: Intent, operation: Operation, data: Dict[str, Any]) -> List[str]:
         """
         Check which required fields are missing for the given intent
+        For GET operations, no data is required.
         """
+        # For GET operations, no data is "missing" when you're just fetching records
+        if operation == Operation.GET:
+            return []
+        
         required = self.required_fields.get(intent, [])
         missing = []
         
@@ -492,17 +589,122 @@ class UnifiedAgentService:
     async def _generate_final_response(
         self, 
         intent: Intent, 
+        operation: Operation,
         data: Dict[str, Any], 
-        language: str
+        language: str,
+        user_id: str
     ) -> Dict[str, Any]:
         """
-        Generate the final response based on intent and extracted data
-        For now, returns dummy responses that match manual endpoint structure
+        Generate the final response based on intent, operation and extracted data
+        For GET operations, queries the database using appropriate tools
+        For CREATE operations, returns responses that match manual endpoint structure
+        
+        Args:
+            intent: The detected intent
+            operation: The operation to perform
+            data: Extracted data from the prompt
+            language: Language preference
+            user_id: User ID for security filtering
         """
+        
+        # Handle GET operations
+        if operation == Operation.GET:
+            try:
+                # Check if this is a specific ID query
+                if data.get("query_type") == "specific_id" and data.get("id"):
+                    # Handle specific ID queries using tools
+                    if intent == Intent.JOB:
+                        result = await self.job_tools.get_job_by_id(data["id"], user_id)
+                    elif intent == Intent.CUSTOMER:
+                        result = await self.client_tools.get_client_by_id(data["id"], user_id)
+                    elif intent == Intent.EXPENSE:
+                        result = await self.expense_tools.get_expense_by_id(data["id"], user_id)
+                    elif intent == Intent.INVOICE:
+                        result = await self.invoice_tools.get_invoice_by_id(data["id"], user_id)
+                    elif intent == Intent.QUOTE:
+                        result = await self.quote_tools.get_quote_by_id(data["id"], user_id)
+                    else:
+                        return {
+                            "success": False,
+                            "message": f"Unsupported GET by ID operation for intent: {intent.value}",
+                            "data": None
+                        }
+                    
+                    # Parse the JSON result from tools
+                    if isinstance(result, str):
+                        result = json.loads(result)
+                    
+                    # Extract the actual data
+                    if "client" in result:
+                        result = result["client"]
+                    elif "invoice" in result:
+                        result = result["invoice"]
+                    elif "quote" in result:
+                        result = result["quote"]
+                    elif "job" in result:
+                        result = result["job"]
+                    elif "expense" in result:
+                        result = result["expense"]
+                        
+                else:
+                    # Handle general list queries using tools
+                    if intent == Intent.JOB:
+                        result = await self.job_tools.get_jobs(user_id=user_id, skip=0, limit=50)
+                    elif intent == Intent.CUSTOMER:
+                        result = await self.client_tools.get_clients(user_id=user_id, skip=0, limit=50)
+                    elif intent == Intent.EXPENSE:
+                        result = await self.expense_tools.get_expenses(user_id=user_id, skip=0, limit=50)
+                    elif intent == Intent.INVOICE:
+                        result = await self.invoice_tools.get_invoices(user_id=user_id, skip=0, limit=50)
+                    elif intent == Intent.QUOTE:
+                        result = await self.quote_tools.get_quotes(user_id=user_id, skip=0, limit=50)
+                    else:
+                        return {
+                            "success": False,
+                            "message": f"Unsupported GET operation for intent: {intent.value}",
+                            "data": None
+                        }
+                    
+                    # Parse the JSON result from tools
+                    if isinstance(result, str):
+                        result = json.loads(result)
+                    
+                    # Extract the list data
+                    if "clients" in result:
+                        result = result["clients"]
+                    elif "invoices" in result:
+                        result = result["invoices"]
+                    elif "quotes" in result:
+                        result = result["quotes"]
+                    elif "jobs" in result:
+                        result = result["jobs"]
+                    elif "expenses" in result:
+                        result = result["expenses"]
+                    else:
+                        result = []
+                        
+                return {
+                    "success": True,
+                    "message": f"Retrieved {intent.value}s successfully",
+                    "data": result,
+                    "intent": intent.value,
+                    "operation": operation.value,
+                    "timestamp": datetime.now().isoformat()
+                }
+                
+            except Exception as e:
+                self.logger.error(f"GET operation failed: {e}")
+                return {
+                    "success": False,
+                    "message": f"Failed to retrieve {intent.value}s: {str(e)}",
+                    "data": None
+                }
+        
         base_response = {
             "success": True,
             "message": "Operation completed successfully",
             "intent": intent.value,
+            "operation": operation.value,
             "timestamp": datetime.now().isoformat()
         }
         
@@ -730,6 +932,7 @@ class UnifiedAgentService:
             "status": "active",
             "state": conversation["state"],
             "intent": conversation["intent"],
+            "operation": conversation.get("operation"),
             "confidence": conversation["confidence"],
             "has_data": bool(conversation["data"]),
             "created_at": conversation["created_at"],
@@ -870,6 +1073,59 @@ class UnifiedAgentService:
             category_text = f" in the {category} category"
         
         return f"Done! I've recorded the expense for {description} with an amount of {amount_text}{category_text} for {date}. This has been added to your expense tracking system for proper record keeping."
+    
+    def _is_specific_id_query(self, prompt: str, intent: Intent) -> bool:
+        """
+        Check if the prompt is asking for a specific item by ID
+        """
+        prompt_lower = prompt.lower()
+        id_patterns = [
+            "by id", "with id", "id:", "invoice id", "client id", 
+            "quote id", "job id", "expense id", "meeting id"
+        ]
+        
+        # Check for ID patterns
+        for pattern in id_patterns:
+            if pattern in prompt_lower:
+                return True
+        
+        # Check for specific ID formats (UUID, ObjectId, etc.)
+        import re
+        id_regex = r'\b[a-f0-9]{24}\b|\b[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\b'
+        if re.search(id_regex, prompt_lower):
+            return True
+            
+        return False
+    
+    def _extract_id_from_prompt(self, prompt: str, intent: Intent) -> Dict[str, Any]:
+        """
+        Extract ID from prompt for specific item queries
+        """
+        import re
+        
+        # Look for various ID formats
+        id_patterns = [
+            r'\b[a-f0-9]{24}\b',  # MongoDB ObjectId
+            r'\b[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\b',  # UUID
+            r'id[:\s]+([a-f0-9-]+)',  # "id: xyz" or "id xyz"
+            r'#([a-f0-9-]+)',  # "#xyz"
+        ]
+        
+        extracted_id = None
+        for pattern in id_patterns:
+            match = re.search(pattern, prompt, re.IGNORECASE)
+            if match:
+                extracted_id = match.group(1) if match.groups() else match.group(0)
+                break
+        
+        return {
+            "extracted_data": {
+                "id": extracted_id,
+                "query_type": "specific_id"
+            },
+            "confidence": 0.9 if extracted_id else 0.0,
+            "missing_fields": [] if extracted_id else ["id"]
+        }
     
     # Audio processing methods
     async def process_audio_request(
@@ -1055,3 +1311,34 @@ class UnifiedAgentService:
         test_results = await self.audio_service.test_all_connections()
         test_results["audio_enabled"] = True
         return test_results
+    
+    def _is_get_all_query(self, prompt: str) -> bool:
+        """
+        Check if the prompt is a "get all" type query that should skip data extraction
+        
+        Examples: "get all my clients", "show all invoices", "list all quotes", "retrieve all jobs"
+        """
+        prompt_lower = prompt.lower().strip()
+        
+        # Keywords that indicate "get all" operations
+        get_all_keywords = [
+            "all my", "all the", "all of my", "every", "list all", "show all", 
+            "get all", "retrieve all", "display all", "view all", "see all"
+        ]
+        
+        # Check for get all patterns
+        for keyword in get_all_keywords:
+            if keyword in prompt_lower:
+                return True
+        
+        # Check for specific patterns like "my clients", "all clients", etc.
+        entity_patterns = [
+            "clients", "invoices", "quotes", "jobs", "expenses", "customer", "invoice", "quote", "job", "expense"
+        ]
+        
+        for entity in entity_patterns:
+            # Patterns like "all clients", "my clients", "clients list", etc.
+            if f"all {entity}" in prompt_lower or f"my {entity}" in prompt_lower:
+                return True
+        
+        return False

@@ -295,15 +295,15 @@ class InvoiceTools:
         description="Get all invoices with optional filtering and search",
         name="get_invoices"
     )
-    async def get_invoices(self, search: str = "", status_filter: str = "", client_id: str = "", user_id: Optional[str] = None, skip: int = 0, limit: int = 100) -> str:
+    async def get_invoices(self, user_id: str, search: str = "", status_filter: str = "", client_id: str = "", skip: int = 0, limit: int = 100) -> str:
         """
         Retrieve a list of invoices with optional filtering
         
         Args:
+            user_id: User ID (required for security)
             search: Optional search text to filter by invoice number or client ID
             status_filter: Filter by status: draft, sent, paid, overdue, cancelled
             client_id: Filter by client ID
-            user_id: Filter by user ID (required for security)
             skip: Number of invoices to skip
             limit: Maximum number of invoices to return
             
@@ -337,9 +337,8 @@ class InvoiceTools:
             if client_id:
                 query_dict["clientId"] = client_id
 
-            # Add user ID filter
-            if user_id:
-                query_dict["userId"] = user_id
+            # Add user ID filter (required for security)
+            query_dict["userId"] = user_id
 
             # Get total count
             total = await invoices_collection.count_documents(query_dict)
@@ -381,13 +380,13 @@ class InvoiceTools:
         description="Get a specific invoice by ID",
         name="get_invoice_by_id"
     )
-    async def get_invoice_by_id(self, invoice_id: str, user_id: Optional[str] = None) -> str:
+    async def get_invoice_by_id(self, invoice_id: str, user_id: str) -> str:
         """
         Retrieve a specific invoice by ID
         
         Args:
             invoice_id: Invoice ID to retrieve
-            user_id: Filter by user ID (required for security)
+            user_id: User ID (required for security)
             
         Returns:
             JSON string containing the invoice details
@@ -399,12 +398,13 @@ class InvoiceTools:
             invoices_collection = get_invoices_collection()
 
             try:
-                query = {"_id": ObjectId(invoice_id)}
-                if user_id:
-                    query["userId"] = user_id
+                query = {"_id": ObjectId(invoice_id), "userId": user_id}
                 invoice_doc = await invoices_collection.find_one(query)
-            except:
-                return json.dumps({"error": "Invalid invoice ID format"})
+            except Exception as e:
+                if "InvalidId" in str(e):
+                    return json.dumps({"error": "Invalid invoice ID format"})
+                else:
+                    raise
 
             if not invoice_doc:
                 return json.dumps({"error": "Invoice not found"})
@@ -436,12 +436,13 @@ class InvoiceTools:
             
         except Exception as e:
             return json.dumps({"error": f"Failed to get invoice: {str(e)}"})
-    def convert_quote_to_invoice(self, quote_id: str, description: str = "") -> str:
+    def convert_quote_to_invoice(self, quote_id: str, user_id: str, description: str = "") -> str:
         """
         Convert an existing quote to an invoice
         
         Args:
             quote_id: ID of the quote to convert
+            user_id: User ID (required for security)
             description: Optional additional details for the conversion
             
         Returns:
@@ -461,6 +462,7 @@ class InvoiceTools:
                 "method": "POST",
                 "data": {
                     "quote_id": quote_id,
+                    "user_id": user_id,
                     "number": invoice_number,
                     "dueDate": due_date.isoformat() if due_date else (datetime.now() + timedelta(days=30)).isoformat(),
                     "notes": notes,
@@ -535,13 +537,13 @@ class InvoiceTools:
         # Common patterns for items with quantities and prices
         patterns = [
             # Pattern: "40 hours at €50/hour" or "40h at €50/h"
-            r'(\\d+(?:\\.\\d+)?)\\s*(?:hours?|hrs?|h)\\s*(?:at|@)\\s*[€$£]?(\\d+(?:\\.\\d+)?)(?:/hour|/hr|/h)?',
+            r'(\d+(?:\.\d+)?)\s*(?:hours?|hrs?|h)\s*(?:at|@)\s*[€$£]?(\d+(?:\.\d+)?)(?:/hour|/hr|/h)?',
             # Pattern: "website development €2000" or "hosting €200"
-            r'([^,\\.;]+?)\\s*[€$£](\\d+(?:\\.\\d+)?)',
+            r'([^,.;]+?)\s*[€$£](\d+(?:\.\d+)?)',
             # Pattern: "3 x consulting sessions at €150 each"
-            r'(\\d+)\\s*x?\\s*([^@]+?)\\s*(?:at|@)\\s*[€$£]?(\\d+(?:\\.\\d+)?)(?:\\s*each)?',
+            r'(\d+)\s*x?\s*([^@]+?)\s*(?:at|@)\s*[€$£]?(\d+(?:\.\d+)?)(?:\s*each)?',
             # Pattern: "domain registration for €15"
-            r'([^,\\.;]+?)\\s*for\\s*[€$£](\\d+(?:\\.\\d+)?)'
+            r'([^,.;]+?)\s*for\s*[€$£](\d+(?:\.\d+)?)'
         ]
         
         item_id = 1
@@ -644,8 +646,8 @@ class InvoiceTools:
         
         # Extract name patterns
         name_patterns = [
-            r'(?:for|to|client)\\s+([A-Z][a-z]+\\s+[A-Z][a-z]+)',
-            r'([A-Z][a-z]+\\s+[A-Z][a-z]+)(?:\\s+at|\\s+from)',
+            r'(?:for|to|client)\s+([A-Z][a-z]+\s+[A-Z][a-z]+)',
+            r'([A-Z][a-z]+\s+[A-Z][a-z]+)(?:\s+at|\s+from)',
         ]
         
         for pattern in name_patterns:
@@ -655,21 +657,21 @@ class InvoiceTools:
                 break
         
         # Extract email
-        email_pattern = r'([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,})'
+        email_pattern = r'([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})'
         email_match = re.search(email_pattern, description)
         if email_match:
             client_data["email"] = email_match.group(1)
         
         # Extract phone
-        phone_pattern = r'(?:phone|tel|mobile)[:\\s]*([+\\d\\s\\-\\(\\)]+)'
+        phone_pattern = r'(?:phone|tel|mobile)[:\s]*([+\d\s\-\(\)]+)'
         phone_match = re.search(phone_pattern, description, re.IGNORECASE)
         if phone_match:
             client_data["phone"] = phone_match.group(1).strip()
         
         # Extract address
         address_patterns = [
-            r'(?:at|address)[:\\s]*([^,\\.;]+(?:street|st|avenue|ave|road|rd|drive|dr)[^,\\.;]*)',
-            r'(\\d+\\s+[^,\\.;]+(?:street|st|avenue|ave|road|rd|drive|dr)[^,\\.;]*)'
+            r'(?:at|address)[:\s]*([^,.;]+(?:street|st|avenue|ave|road|rd|drive|dr)[^,.;]*)',
+            r'(\d+\s+[^,.;]+(?:street|st|avenue|ave|road|rd|drive|dr)[^,.;]*)'
         ]
         
         for pattern in address_patterns:
@@ -680,8 +682,8 @@ class InvoiceTools:
         
         # Extract company
         company_patterns = [
-            r'(?:company|corp|inc|ltd|llc)[:\\s]*([^,\\.;]+)',
-            r'([^,\\.;]+(?:company|corp|inc|ltd|llc))'
+            r'(?:company|corp|inc|ltd|llc)[:\s]*([^,.;]+)',
+            r'([^,.;]+(?:company|corp|inc|ltd|llc))'
         ]
         
         for pattern in company_patterns:
@@ -770,9 +772,9 @@ class InvoiceTools:
         """
         # Pattern for discount amounts
         discount_patterns = [
-            r'discount[:\\s]*[€$£]?(\\d+(?:\\.\\d+)?)',
-            r'(?:less|minus)[:\\s]*[€$£]?(\\d+(?:\\.\\d+)?)',
-            r'[€$£]?(\\d+(?:\\.\\d+)?)\\s*(?:discount|off)'
+            r'discount[:\s]*[€$£]?(\d+(?:\.\d+)?)',
+            r'(?:less|minus)[:\s]*[€$£]?(\d+(?:\.\d+)?)',
+            r'[€$£]?(\d+(?:\.\d+)?)\s*(?:discount|off)'
         ]
         
         for pattern in discount_patterns:
@@ -788,8 +790,8 @@ class InvoiceTools:
         """
         # Look for note indicators
         note_patterns = [
-            r'(?:note|notes|comment|comments)[:\\s]*([^,\\.;]+)',
-            r'(?:additional|extra|special)[:\\s]*([^,\\.;]+)'
+            r'(?:note|notes|comment|comments)[:\s]*([^,.;]+)',
+            r'(?:additional|extra|special)[:\s]*([^,.;]+)'
         ]
         
         for pattern in note_patterns:
@@ -803,6 +805,6 @@ class InvoiceTools:
         """
         Generate a unique invoice number
         """
-        current_year = datetime.now().year
-        timestamp_suffix = int(datetime.now().timestamp()) % 10000
-        return f"INV-{current_year}-{timestamp_suffix:04d}"
+        current_year = datetime.now().strftime('%Y')
+        unique_suffix = str(uuid.uuid4().hex)[:6].upper()
+        return f"INV-{current_year}-{unique_suffix}"
