@@ -226,6 +226,10 @@ class UnifiedAgentService:
                 )
                 conversation["state"] = ConversationState.COMPLETED
                 
+                # Reset conversation after successful response
+                if response.get("success", False):
+                    self.reset_conversation(user_id)
+                
                 return response
             
             # Fallback: attempt quick re-detection instead of failing immediately
