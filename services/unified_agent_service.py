@@ -550,13 +550,15 @@ class UnifiedAgentService:
         """
         Intelligently merge new extracted data with existing conversation data.
         Only updates fields that have meaningful values in new_data.
+        Special handling for 'extracted_data' key - merge its contents to top level.
         """
         for key, value in new_data.items():
-            # Only update if the new value is meaningful
-            if self._is_meaningful_value(value):
-                existing_data[key] = value
-            # Keep existing value if new value is not meaningful and we have existing data
-            elif key not in existing_data:
+            if key == "extracted_data" and isinstance(value, dict):
+                # Merge extracted_data contents to top level
+                for sub_key, sub_value in value.items():
+                    if self._is_meaningful_value(sub_value):
+                        existing_data[sub_key] = sub_value
+            elif self._is_meaningful_value(value):
                 existing_data[key] = value
     
     def _is_meaningful_value(self, value: Any) -> bool:
@@ -583,10 +585,14 @@ class UnifiedAgentService:
     def _check_missing_data(self, intent: Intent, operation: Operation, data: Dict[str, Any]) -> List[str]:
         """
         Check which required fields are missing for the given intent
-        For GET operations, no data is required.
+        For GET operations, only check for missing data if it's a specific ID query
         """
-        # For GET operations, no data is "missing" when you're just fetching records
+        # For GET operations, only check for missing data if it's a specific ID query
         if operation == Operation.GET:
+            # Check if this is a specific ID query that requires an ID
+            if data.get("query_type") == "specific_id" and not data.get("id"):
+                return ["id"]
+            # For general "get all" queries, no data is missing
             return []
         
         required = self.required_fields.get(intent, [])
