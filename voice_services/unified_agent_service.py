@@ -22,6 +22,14 @@ class Intent(str, Enum):
     EXPENSE = "expense"
     UNKNOWN = "unknown"
 
+class Operation(str, Enum):
+    """Supported operations for AI agent"""
+    GET = "get"
+    CREATE = "create"
+    UPDATE = "update"
+    DELETE = "delete"
+    UNKNOWN = "unknown"
+
 class ConversationState(str, Enum):
     """States of conversation flow"""
     INTENT_DETECTION = "intent_detection"
@@ -98,6 +106,18 @@ class UnifiedAgentService:
             conversation = self._get_conversation_state(user_id)
             self.logger.info(f"Conversation state: {conversation['state']}, attempt: {conversation.get('missing_data_attempts', 0)}")
             
+            # Quick user commands: reset/cancel/start over
+            lower_prompt = prompt.strip().lower()
+            if any(cmd in lower_prompt for cmd in ["never mind", "cancel", "start over", "reset", "stop"]):
+                # Reset conversation and ask for clarification
+                self.reset_conversation(user_id)
+                conversation = self._get_conversation_state(user_id)
+                return {
+                    "success": True,
+                    "message": "Conversation reset. How can I help you now?",
+                    "action": "reset"
+                }
+
             # Step 1: Intent Detection (if not already detected)
             if conversation["state"] == ConversationState.INTENT_DETECTION:
                 intent, confidence = await self._detect_intent(prompt, language)
@@ -112,6 +132,26 @@ class UnifiedAgentService:
                     return self._create_clarification_response(conversation, language)
                 
                 conversation["state"] = ConversationState.DATA_EXTRACTION
+            
+            else:
+                # If we're mid-conversation, check whether the user has changed their intent.
+                # Only attempt re-detection if we're not in data extraction/completion states (to avoid
+                # misinterpreting missing data inputs as new intents)
+                if conversation["state"] not in [ConversationState.DATA_EXTRACTION, ConversationState.DATA_COMPLETION]:
+                    try:
+                        new_intent, new_confidence = await self._detect_intent(prompt, language)
+                        # If the new intent is different and confidence is reasonably high, switch flows
+                        if new_intent != conversation.get("intent") and new_confidence >= 0.6:
+                            self.logger.info(f"User changed intent mid-flow from {conversation.get('intent')} to {new_intent} (conf={new_confidence})")
+                            conversation["intent"] = new_intent
+                            conversation["confidence"] = new_confidence
+                            # Reset collected data but keep it optional to be merged later if fields overlap
+                            conversation["data"] = {}
+                            conversation["missing_data_attempts"] = 0
+                            conversation["state"] = ConversationState.DATA_EXTRACTION
+                    except Exception:
+                        # If intent re-detection fails, continue with existing flow
+                        self.logger.debug("Intent re-detection failed while mid-conversation; continuing existing flow")
             
             # Step 2: Data Extraction (initial or additional data)
             if conversation["state"] in [ConversationState.DATA_EXTRACTION, ConversationState.DATA_COMPLETION]:

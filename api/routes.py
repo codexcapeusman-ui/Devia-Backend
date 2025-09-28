@@ -51,7 +51,6 @@ agent_router = APIRouter(prefix="/agent", tags=["AI Agents"])
 
 # Global unified agent service
 unified_agent_service = None
-voice_unified_agent_service = None
 
 class UnifiedAgentRequest(BaseModel):
     """Unified request model for all AI agent interactions"""
@@ -81,23 +80,19 @@ def get_voice_sk_service(request: Request) -> VoiceSemanticKernelService:
         raise HTTPException(status_code=500, detail="Voice Semantic Kernel service not initialized")
     return voice_sk_service
 
-def get_unified_agent_service(sk_service: SemanticKernelService = Depends(get_sk_service)) -> UnifiedAgentService:
-    """Dependency to get Unified Agent service"""
+def get_unified_agent_service(voice_sk_service: VoiceSemanticKernelService = Depends(get_voice_sk_service)) -> VoiceUnifiedAgentService:
+    """Dependency to get Unified Agent service (shared instance for both text and voice)"""
     global unified_agent_service
     
     if not unified_agent_service:
-        unified_agent_service = UnifiedAgentService(sk_service)
+        unified_agent_service = VoiceUnifiedAgentService(voice_sk_service)
     
     return unified_agent_service
 
 def get_voice_unified_agent_service(voice_sk_service: VoiceSemanticKernelService = Depends(get_voice_sk_service)) -> VoiceUnifiedAgentService:
-    """Dependency to get Voice Unified Agent service"""
-    global voice_unified_agent_service
-    
-    if not voice_unified_agent_service:
-        voice_unified_agent_service = VoiceUnifiedAgentService(voice_sk_service)
-    
-    return voice_unified_agent_service
+    """Dependency to get Voice Unified Agent service (same instance as text service for context preservation)"""
+    # Use the same instance as text service to preserve conversation context
+    return get_unified_agent_service(voice_sk_service)
 
 @agent_router.post("/process", response_model=Dict[str, Any])
 async def process_agent_request(
@@ -400,7 +395,8 @@ async def voice_agent_websocket(
 async def voice_upload_api(
     file: UploadFile = File(...),
     language: str = "en",
-    user_id: str = Depends(get_current_user_id_dependency)
+    user_id: str = Depends(get_current_user_id_dependency),
+    voice_unified_service: VoiceUnifiedAgentService = Depends(get_voice_unified_agent_service)
 ):
     """
     API endpoint for voice file upload and processing
@@ -448,25 +444,17 @@ async def voice_upload_api(
             raise HTTPException(status_code=400, detail="Empty file uploaded")
 
         # Initialize voice services
-        voice_unified_service = None
         audio_service = None
 
         try:
             # Create audio service
             audio_service = UnifiedAudioService()
-
-            # Create voice services
-            from config.settings import Settings
-            settings = Settings()
-            voice_sk_service = VoiceSemanticKernelService(settings)
-            await voice_sk_service.initialize()
-            voice_unified_service = VoiceUnifiedAgentService(voice_sk_service)
-            logger.info("Voice and audio services initialized successfully")
+            logger.info("Audio service initialized successfully")
         except Exception as e:
-            logger.warning(f"Could not initialize voice services: {e}")
-            # Will use fallback processing with just audio service
+            logger.warning(f"Could not initialize audio service: {e}")
+            # Will use fallback processing
 
-        # If we have voice_unified_service with audio capabilities, use it directly
+        # Use the voice unified service from dependency
         if voice_unified_service and hasattr(voice_unified_service, 'process_audio_request'):
             logger.info(f"Using voice unified service for complete audio processing")
 

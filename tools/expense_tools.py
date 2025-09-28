@@ -186,7 +186,7 @@ class ExpenseTools:
         description="Get all expenses with optional filtering and search",
         name="get_expenses"
     )
-    async def get_expenses(self, search: str = "", category_filter: str = "", start_date: str = "", end_date: str = "", skip: int = 0, limit: int = 100) -> str:
+    async def get_expenses(self, search: str = "", category_filter: str = "", start_date: str = "", end_date: str = "", user_id: Optional[str] = None, skip: int = 0, limit: int = 100) -> str:
         """
         Retrieve a list of expenses with optional filtering
         
@@ -195,6 +195,7 @@ class ExpenseTools:
             category_filter: Filter by category (Materials, Transport, Equipment, etc.)
             start_date: Filter expenses from this date (YYYY-MM-DD format)
             end_date: Filter expenses until this date (YYYY-MM-DD format)
+            user_id: Filter by user ID (required for security)
             skip: Number of expenses to skip
             limit: Maximum number of expenses to return
             
@@ -238,6 +239,10 @@ class ExpenseTools:
                         return json.dumps({"error": "Invalid end_date format. Use YYYY-MM-DD"})
                 query_dict["date"] = date_filter
 
+            # Add user ID filter
+            if user_id:
+                query_dict["userId"] = user_id
+
             # Get total count
             total = await expenses_collection.count_documents(query_dict)
 
@@ -275,12 +280,13 @@ class ExpenseTools:
         description="Get a specific expense by ID",
         name="get_expense_by_id"
     )
-    async def get_expense_by_id(self, expense_id: str) -> str:
+    async def get_expense_by_id(self, expense_id: str, user_id: Optional[str] = None) -> str:
         """
         Retrieve a specific expense by ID
         
         Args:
             expense_id: Expense ID to retrieve
+            user_id: Filter by user ID (required for security)
             
         Returns:
             JSON string containing the expense details
@@ -292,7 +298,10 @@ class ExpenseTools:
             expenses_collection = get_expenses_collection()
 
             try:
-                expense_doc = await expenses_collection.find_one({"_id": ObjectId(expense_id)})
+                query = {"_id": ObjectId(expense_id)}
+                if user_id:
+                    query["userId"] = user_id
+                expense_doc = await expenses_collection.find_one(query)
             except:
                 return json.dumps({"error": "Invalid expense ID format"})
 
@@ -327,7 +336,7 @@ class ExpenseTools:
         description="Get expenses by category with totals",
         name="get_expenses_by_category"
     )
-    async def get_expenses_by_category(self, category: str, start_date: str = "", end_date: str = "") -> str:
+    async def get_expenses_by_category(self, category: str, start_date: str = "", end_date: str = "", user_id: Optional[str] = None) -> str:
         """
         Get all expenses for a specific category with totals
         
@@ -335,6 +344,7 @@ class ExpenseTools:
             category: Expense category to filter by
             start_date: Optional start date filter (YYYY-MM-DD format)
             end_date: Optional end date filter (YYYY-MM-DD format)
+            user_id: Filter by user ID (required for security)
             
         Returns:
             JSON string containing expenses and category totals
@@ -361,6 +371,10 @@ class ExpenseTools:
                     except ValueError:
                         return json.dumps({"error": "Invalid end_date format. Use YYYY-MM-DD"})
                 query_dict["date"] = date_filter
+
+            # Add user ID filter
+            if user_id:
+                query_dict["userId"] = user_id
 
             # Get expenses
             expenses_cursor = expenses_collection.find(query_dict).sort("date", -1)

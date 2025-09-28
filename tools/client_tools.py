@@ -184,13 +184,14 @@ class ClientTools:
         description="Get all clients with optional filtering and search",
         name="get_clients"
     )
-    async def get_clients(self, search: str = "", status_filter: str = "", skip: int = 0, limit: int = 100) -> str:
+    async def get_clients(self, search: str = "", status_filter: str = "", user_id: Optional[str] = None, skip: int = 0, limit: int = 100) -> str:
         """
         Retrieve a list of clients with optional filtering
         
         Args:
             search: Optional search text to filter by name, email, or company
             status_filter: Filter by status: active, delinquent, archived
+            user_id: Filter by user ID (required for security)
             skip: Number of clients to skip
             limit: Maximum number of clients to return
             
@@ -220,6 +221,10 @@ class ClientTools:
                 if status_filter not in valid_statuses:
                     return json.dumps({"error": f"Invalid status filter: {status_filter}"})
                 query_dict["status"] = status_filter
+
+            # Add user ID filter
+            if user_id:
+                query_dict["userId"] = user_id
 
             # Get total count
             total = await clients_collection.count_documents(query_dict)
@@ -258,12 +263,13 @@ class ClientTools:
         description="Get a specific client by ID",
         name="get_client_by_id"
     )
-    async def get_client_by_id(self, client_id: str) -> str:
+    async def get_client_by_id(self, client_id: str, user_id: Optional[str] = None) -> str:
         """
         Retrieve a specific client by ID
         
         Args:
             client_id: Client ID to retrieve
+            user_id: Filter by user ID (required for security)
             
         Returns:
             JSON string containing the client details
@@ -275,7 +281,10 @@ class ClientTools:
             clients_collection = get_clients_collection()
 
             try:
-                client_doc = await clients_collection.find_one({"_id": ObjectId(client_id)})
+                query = {"_id": ObjectId(client_id)}
+                if user_id:
+                    query["userId"] = user_id
+                client_doc = await clients_collection.find_one(query)
             except:
                 return json.dumps({"error": "Invalid client ID format"})
 

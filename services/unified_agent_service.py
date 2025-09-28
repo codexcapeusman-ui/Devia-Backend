@@ -126,27 +126,30 @@ class UnifiedAgentService:
 
             else:
                 # If we're mid-conversation, check whether the user has changed their intent/operation.
-                try:
-                    new_intent, new_operation, new_confidence = await self._detect_intent(prompt, language)
-                    # If the new intent/operation is different and confidence is reasonably high, switch flows
-                    if new_intent != conversation.get("intent") and new_confidence >= 0.6:
-                        self.logger.info(f"User changed intent mid-flow from {conversation.get('intent')} to {new_intent} (conf={new_confidence})")
-                        conversation["intent"] = new_intent
-                        conversation["operation"] = new_operation
-                        conversation["confidence"] = new_confidence
-                        # Reset collected data but keep it optional to be merged later if fields overlap
-                        conversation["data"] = {}
-                        conversation["missing_data_attempts"] = 0
-                        conversation["state"] = ConversationState.RESPONSE_GENERATION if new_operation == Operation.GET else ConversationState.DATA_EXTRACTION
-                    else:
-                        # If user explicitly asks a GET while mid-flow, allow immediate GET
-                        if new_operation == Operation.GET and new_confidence >= 0.4:
-                            self.logger.info(f"Switching to GET operation mid-flow (confidence {new_confidence})")
-                            conversation["operation"] = Operation.GET
-                            conversation["state"] = ConversationState.RESPONSE_GENERATION
-                except Exception:
-                    # If intent re-detection fails, continue with existing flow
-                    self.logger.debug("Intent re-detection failed while mid-conversation; continuing existing flow")
+                # Only attempt re-detection if we're not in data extraction/completion states (to avoid
+                # misinterpreting missing data inputs as new intents)
+                if conversation["state"] not in [ConversationState.DATA_EXTRACTION, ConversationState.DATA_COMPLETION]:
+                    try:
+                        new_intent, new_operation, new_confidence = await self._detect_intent(prompt, language)
+                        # If the new intent/operation is different and confidence is reasonably high, switch flows
+                        if new_intent != conversation.get("intent") and new_confidence >= 0.6:
+                            self.logger.info(f"User changed intent mid-flow from {conversation.get('intent')} to {new_intent} (conf={new_confidence})")
+                            conversation["intent"] = new_intent
+                            conversation["operation"] = new_operation
+                            conversation["confidence"] = new_confidence
+                            # Reset collected data but keep it optional to be merged later if fields overlap
+                            conversation["data"] = {}
+                            conversation["missing_data_attempts"] = 0
+                            conversation["state"] = ConversationState.RESPONSE_GENERATION if new_operation == Operation.GET else ConversationState.DATA_EXTRACTION
+                        else:
+                            # If user explicitly asks a GET while mid-flow, allow immediate GET
+                            if new_operation == Operation.GET and new_confidence >= 0.4:
+                                self.logger.info(f"Switching to GET operation mid-flow (confidence {new_confidence})")
+                                conversation["operation"] = Operation.GET
+                                conversation["state"] = ConversationState.RESPONSE_GENERATION
+                    except Exception:
+                        # If intent re-detection fails, continue with existing flow
+                        self.logger.debug("Intent re-detection failed while mid-conversation; continuing existing flow")
             
             # Step 2: Data Extraction (initial or additional data)
             if conversation["state"] in [ConversationState.DATA_EXTRACTION, ConversationState.DATA_COMPLETION]:

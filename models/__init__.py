@@ -38,6 +38,15 @@ from .expenses import (
     ExpenseCategory
 )
 
+# Import calendar models
+from .calendar import (
+    Job,
+    Meeting,
+    MeetingAttendee,
+    JobStatus,
+    MeetingStatus
+)
+
 # Enums
 class UserRole(str, Enum):
     ADMIN = "admin"

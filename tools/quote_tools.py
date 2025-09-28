@@ -269,7 +269,7 @@ class QuoteTools:
         description="Get all quotes with optional filtering and search",
         name="get_quotes"
     )
-    async def get_quotes(self, search: str = "", status_filter: str = "", client_id: str = "", skip: int = 0, limit: int = 100) -> str:
+    async def get_quotes(self, search: str = "", status_filter: str = "", client_id: str = "", user_id: Optional[str] = None, skip: int = 0, limit: int = 100) -> str:
         """
         Retrieve a list of quotes with optional filtering
         
@@ -277,6 +277,7 @@ class QuoteTools:
             search: Optional search text to filter by quote number or client ID
             status_filter: Filter by status: draft, sent, accepted, rejected, expired
             client_id: Filter by client ID
+            user_id: Filter by user ID (required for security)
             skip: Number of quotes to skip
             limit: Maximum number of quotes to return
             
@@ -309,6 +310,10 @@ class QuoteTools:
             # Add client ID filter
             if client_id:
                 query_dict["clientId"] = client_id
+
+            # Add user ID filter
+            if user_id:
+                query_dict["userId"] = user_id
 
             # Get total count
             total = await quotes_collection.count_documents(query_dict)
@@ -350,12 +355,13 @@ class QuoteTools:
         description="Get a specific quote by ID",
         name="get_quote_by_id"
     )
-    async def get_quote_by_id(self, quote_id: str) -> str:
+    async def get_quote_by_id(self, quote_id: str, user_id: Optional[str] = None) -> str:
         """
         Retrieve a specific quote by ID
         
         Args:
             quote_id: Quote ID to retrieve
+            user_id: Filter by user ID (required for security)
             
         Returns:
             JSON string containing the quote details
@@ -367,7 +373,10 @@ class QuoteTools:
             quotes_collection = get_quotes_collection()
 
             try:
-                quote_doc = await quotes_collection.find_one({"_id": ObjectId(quote_id)})
+                query = {"_id": ObjectId(quote_id)}
+                if user_id:
+                    query["userId"] = user_id
+                quote_doc = await quotes_collection.find_one(query)
             except:
                 return json.dumps({"error": "Invalid quote ID format"})
 

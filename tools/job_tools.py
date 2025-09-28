@@ -18,7 +18,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from bson import ObjectId
 
 from config.settings import Settings
-from models import Job, Client, JobStatus
+from models import Job, Client, JobStatus, MeetingAttendee
 from database import get_jobs_collection, get_clients_collection, get_meetings_collection, get_invoices_collection, get_quotes_collection, get_expenses_collection
 
 class JobTools:
@@ -375,6 +375,7 @@ class JobTools:
     async def get_jobs(self, 
                 skip: int = 0, 
                 limit: int = 100, 
+                user_id: Optional[str] = None,
                 client_id: Optional[str] = None,
                 assigned_to: Optional[str] = None,
                 status: Optional[str] = None,
@@ -386,6 +387,7 @@ class JobTools:
         Args:
             skip: Number of jobs to skip for pagination
             limit: Maximum number of jobs to return
+            user_id: Filter by user ID (required for security)
             client_id: Filter by client ID
             assigned_to: Filter by assigned user ID
             status: Filter by job status (scheduled, in_progress, completed, cancelled)
@@ -397,11 +399,11 @@ class JobTools:
         """
         try:
             # Run async function in sync context
-            return await self._get_jobs_async(skip, limit, client_id, assigned_to, status, start_date, end_date)
+            return await self._get_jobs_async(skip, limit, user_id, client_id, assigned_to, status, start_date, end_date)
         except Exception as e:
             return json.dumps({"error": f"Failed to get jobs: {str(e)}", "jobs": [], "total": 0})
 
-    async def _get_jobs_async(self, skip, limit, client_id, assigned_to, status, start_date, end_date):
+    async def _get_jobs_async(self, skip, limit, user_id, client_id, assigned_to, status, start_date, end_date):
         """Async implementation for getting jobs"""
         try:
             jobs_collection = get_jobs_collection()
@@ -409,6 +411,8 @@ class JobTools:
             # Build query filter
             query = {}
             
+            if user_id:
+                query["userId"] = user_id
             if client_id:
                 query["clientId"] = client_id
             if assigned_to:
@@ -464,22 +468,23 @@ class JobTools:
         description="Get a specific job by ID from database - returns actual data",
         name="get_job_by_id"
     )
-    def get_job_by_id(self, job_id: str) -> str:
+    def get_job_by_id(self, job_id: str, user_id: Optional[str] = None) -> str:
         """
         Retrieve a specific job by its ID from database
         
         Args:
             job_id: The job ID to retrieve
+            user_id: Filter by user ID (required for security)
             
         Returns:
             JSON string containing actual job data from database
         """
         try:
-            return asyncio.run(self._get_job_by_id_async(job_id))
+            return asyncio.run(self._get_job_by_id_async(job_id, user_id))
         except Exception as e:
             return json.dumps({"error": f"Failed to get job: {str(e)}", "job": None})
 
-    async def _get_job_by_id_async(self, job_id):
+    async def _get_job_by_id_async(self, job_id, user_id):
         """Async implementation for getting job by ID"""
         try:
             jobs_collection = get_jobs_collection()
@@ -490,7 +495,12 @@ class JobTools:
             except:
                 return json.dumps({"error": "Invalid job ID format", "job": None})
             
-            job = await jobs_collection.find_one({"_id": object_id})
+            # Build query with user_id filter
+            query = {"_id": object_id}
+            if user_id:
+                query["userId"] = user_id
+            
+            job = await jobs_collection.find_one(query)
             
             if not job:
                 return json.dumps({"error": "Job not found", "job": None})
@@ -524,6 +534,7 @@ class JobTools:
                             start_date: Optional[str] = None,
                             end_date: Optional[str] = None,
                             event_types: Optional[List[str]] = None,
+                            user_id: Optional[str] = None,
                             client_id: Optional[str] = None) -> str:
         """
         Get calendar overview combining all event types from database
@@ -532,17 +543,18 @@ class JobTools:
             start_date: Start date for filtering (ISO format)
             end_date: End date for filtering (ISO format)
             event_types: List of event types to include (job, meeting, invoice, quote)
+            user_id: Filter by user ID (required for security)
             client_id: Filter by client ID
             
         Returns:
             JSON string containing actual calendar data from database
         """
         try:
-            return asyncio.run(self._get_calendar_overview_async(start_date, end_date, event_types, client_id))
+            return asyncio.run(self._get_calendar_overview_async(start_date, end_date, event_types, user_id, client_id))
         except Exception as e:
             return json.dumps({"error": f"Failed to get calendar overview: {str(e)}", "events": [], "total": 0})
 
-    async def _get_calendar_overview_async(self, start_date, end_date, event_types, client_id):
+    async def _get_calendar_overview_async(self, start_date, end_date, event_types, user_id, client_id):
         """Async implementation for getting calendar overview"""
         try:
             all_events = []
@@ -564,6 +576,8 @@ class JobTools:
             if "job" in event_types:
                 jobs_collection = get_jobs_collection()
                 job_query = {"startTime": {"$gte": start_dt, "$lte": end_dt}}
+                if user_id:
+                    job_query["userId"] = user_id
                 if client_id:
                     job_query["clientId"] = client_id
                 
@@ -586,6 +600,8 @@ class JobTools:
             if "meeting" in event_types:
                 meetings_collection = get_meetings_collection()
                 meeting_query = {"startTime": {"$gte": start_dt, "$lte": end_dt}}
+                if user_id:
+                    meeting_query["userId"] = user_id
                 
                 meetings_cursor = meetings_collection.find(meeting_query)
                 meetings = await meetings_cursor.to_list(length=None)
@@ -606,6 +622,8 @@ class JobTools:
             if "invoice" in event_types:
                 invoices_collection = get_invoices_collection()
                 invoice_query = {}
+                if user_id:
+                    invoice_query["userId"] = user_id
                 if client_id:
                     invoice_query["client_id"] = client_id
                 
@@ -634,6 +652,8 @@ class JobTools:
             if "quote" in event_types:
                 quotes_collection = get_quotes_collection()
                 quote_query = {}
+                if user_id:
+                    quote_query["userId"] = user_id
                 if client_id:
                     quote_query["client_id"] = client_id
                 
@@ -863,6 +883,7 @@ class JobTools:
     async def get_meetings(self,
                     skip: int = 0,
                     limit: int = 100,
+                    user_id: Optional[str] = None,
                     organizer_id: Optional[str] = None,
                     status: Optional[str] = None,
                     start_date: Optional[str] = None,
@@ -873,6 +894,7 @@ class JobTools:
         Args:
             skip: Number of meetings to skip for pagination
             limit: Maximum number of meetings to return
+            user_id: Filter by user ID (required for security)
             organizer_id: Filter by organizer user ID
             status: Filter by meeting status (scheduled, confirmed, cancelled)
             start_date: Filter meetings starting from this date (ISO format)
@@ -882,11 +904,11 @@ class JobTools:
             JSON string containing actual meetings data from database
         """
         try:
-            return await self._get_meetings_async(skip, limit, organizer_id, status, start_date, end_date)
+            return await self._get_meetings_async(skip, limit, user_id, organizer_id, status, start_date, end_date)
         except Exception as e:
             return json.dumps({"error": f"Failed to get meetings: {str(e)}", "meetings": [], "total": 0})
 
-    async def _get_meetings_async(self, skip, limit, organizer_id, status, start_date, end_date):
+    async def _get_meetings_async(self, skip, limit, user_id, organizer_id, status, start_date, end_date):
         """Async implementation for getting meetings"""
         try:
             meetings_collection = get_meetings_collection()
@@ -894,6 +916,8 @@ class JobTools:
             # Build query filter
             query = {}
             
+            if user_id:
+                query["userId"] = user_id
             if organizer_id:
                 query["organizerId"] = organizer_id
             if status:
@@ -918,6 +942,21 @@ class JobTools:
             # Convert ObjectId to string and format response
             meetings_data = []
             for meeting in meetings_list:
+                # Normalize attendees to MeetingAttendee format
+                attendees = meeting.get("attendees", [])
+                normalized_attendees = []
+                for attendee in attendees:
+                    if isinstance(attendee, dict):
+                        normalized_attendees.append({
+                            "userId": attendee.get("userId", attendee.get("user_id", "")),
+                            "name": attendee.get("name", ""),
+                            "email": attendee.get("email", ""),
+                            "status": attendee.get("status", "pending")
+                        })
+                    else:
+                        # If it's already a MeetingAttendee object, convert to dict
+                        normalized_attendees.append(attendee)
+                
                 meeting_data = {
                     "id": str(meeting["_id"]),
                     "title": meeting.get("title", ""),
@@ -925,7 +964,7 @@ class JobTools:
                     "startTime": meeting.get("startTime").isoformat() if meeting.get("startTime") else None,
                     "endTime": meeting.get("endTime").isoformat() if meeting.get("endTime") else None,
                     "location": meeting.get("location", ""),
-                    "attendees": meeting.get("attendees", []),
+                    "attendees": normalized_attendees,
                     "organizerId": meeting.get("organizerId", ""),
                     "status": meeting.get("status", "scheduled"),
                     "googleEventId": meeting.get("googleEventId"),
@@ -948,22 +987,23 @@ class JobTools:
         description="Get a specific meeting by ID from database - returns actual data",
         name="get_meeting_by_id"
     )
-    def get_meeting_by_id(self, meeting_id: str) -> str:
+    def get_meeting_by_id(self, meeting_id: str, user_id: Optional[str] = None) -> str:
         """
         Retrieve a specific meeting by its ID from database
         
         Args:
             meeting_id: The meeting ID to retrieve
+            user_id: Filter by user ID (required for security)
             
         Returns:
             JSON string containing actual meeting data from database
         """
         try:
-            return asyncio.run(self._get_meeting_by_id_async(meeting_id))
+            return asyncio.run(self._get_meeting_by_id_async(meeting_id, user_id))
         except Exception as e:
             return json.dumps({"error": f"Failed to get meeting: {str(e)}", "meeting": None})
 
-    async def _get_meeting_by_id_async(self, meeting_id):
+    async def _get_meeting_by_id_async(self, meeting_id, user_id):
         """Async implementation for getting meeting by ID"""
         try:
             meetings_collection = get_meetings_collection()
@@ -974,7 +1014,12 @@ class JobTools:
             except:
                 return json.dumps({"error": "Invalid meeting ID format", "meeting": None})
             
-            meeting = await meetings_collection.find_one({"_id": object_id})
+            # Build query with user_id filter
+            query = {"_id": object_id}
+            if user_id:
+                query["userId"] = user_id
+            
+            meeting = await meetings_collection.find_one(query)
             
             if not meeting:
                 return json.dumps({"error": "Meeting not found", "meeting": None})
@@ -1176,6 +1221,36 @@ class JobTools:
             return json.dumps({"error": f"Failed to create delete API call: {str(e)}"})
 
     @kernel_function(
+        description="Get all scheduled meetings (not completed or cancelled) - returns actual data",
+        name="get_scheduled_meetings"
+    )
+    async def get_scheduled_meetings(self,
+                                   skip: int = 0,
+                                   limit: int = 100,
+                                   user_id: Optional[str] = None,
+                                   organizer_id: Optional[str] = None,
+                                   start_date: Optional[str] = None,
+                                   end_date: Optional[str] = None) -> str:
+        """
+        Retrieve scheduled meetings from database (status: scheduled or confirmed)
+
+        Args:
+            skip: Number of meetings to skip for pagination
+            limit: Maximum number of meetings to return
+            user_id: Filter by user ID (required for security)
+            organizer_id: Filter by organizer user ID
+            start_date: Filter meetings starting from this date (ISO format)
+            end_date: Filter meetings ending before this date (ISO format)
+
+        Returns:
+            JSON string containing actual scheduled meetings data from database
+        """
+        try:
+            return await self._get_meetings_async(skip, limit, user_id, organizer_id, "scheduled", start_date, end_date)
+        except Exception as e:
+            return json.dumps({"error": f"Failed to get scheduled meetings: {str(e)}", "meetings": [], "total": 0})
+
+    @kernel_function(
         description="Sync jobs with Google Calendar and return API call structure",
         name="sync_google_calendar_api_call"
     )
@@ -1284,22 +1359,23 @@ class JobTools:
         description="Get job statistics and summary from database - returns actual data",
         name="get_job_statistics"
     )
-    def get_job_statistics(self, date_range_days: int = 30) -> str:
+    def get_job_statistics(self, date_range_days: int = 30, user_id: Optional[str] = None) -> str:
         """
         Get job statistics and summary
         
         Args:
             date_range_days: Number of days to include in statistics
+            user_id: Filter by user ID (required for security)
             
         Returns:
             JSON string containing job statistics from database
         """
         try:
-            return asyncio.run(self._get_job_statistics_async(date_range_days))
+            return asyncio.run(self._get_job_statistics_async(date_range_days, user_id))
         except Exception as e:
             return json.dumps({"error": f"Failed to get statistics: {str(e)}"})
 
-    async def _get_job_statistics_async(self, date_range_days):
+    async def _get_job_statistics_async(self, date_range_days, user_id):
         """Async implementation for getting job statistics"""
         try:
             jobs_collection = get_jobs_collection()
@@ -1314,19 +1390,25 @@ class JobTools:
                     "$match": {
                         "startTime": {"$gte": start_date, "$lte": end_date}
                     }
-                },
-                {
-                    "$group": {
-                        "_id": "$status",
-                        "count": {"$sum": 1},
-                        "jobs": {"$push": {
-                            "id": {"$toString": "$_id"},
-                            "title": "$title",
-                            "startTime": "$startTime"
-                        }}
-                    }
                 }
             ]
+            
+            # Add user_id filter if provided
+            if user_id:
+                pipeline[0]["$match"]["userId"] = user_id
+            
+            # Add group stage
+            pipeline.append({
+                "$group": {
+                    "_id": "$status",
+                    "count": {"$sum": 1},
+                    "jobs": {"$push": {
+                        "id": {"$toString": "$_id"},
+                        "title": "$title",
+                        "startTime": "$startTime"
+                    }}
+                }
+            })
             
             # Execute aggregation
             stats_cursor = jobs_collection.aggregate(pipeline)
@@ -1338,10 +1420,14 @@ class JobTools:
             
             # Get upcoming jobs (next 7 days)
             upcoming_date = datetime.now() + timedelta(days=7)
-            upcoming_cursor = jobs_collection.find({
+            upcoming_query = {
                 "startTime": {"$gte": datetime.now(), "$lte": upcoming_date},
                 "status": {"$in": ["scheduled", "in_progress"]}
-            }).sort("startTime", 1).limit(10)
+            }
+            if user_id:
+                upcoming_query["userId"] = user_id
+            
+            upcoming_cursor = jobs_collection.find(upcoming_query).sort("startTime", 1).limit(10)
             
             upcoming_jobs = await upcoming_cursor.to_list(length=10)
             upcoming_data = []

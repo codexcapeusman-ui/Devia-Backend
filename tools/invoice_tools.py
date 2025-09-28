@@ -295,7 +295,7 @@ class InvoiceTools:
         description="Get all invoices with optional filtering and search",
         name="get_invoices"
     )
-    async def get_invoices(self, search: str = "", status_filter: str = "", client_id: str = "", skip: int = 0, limit: int = 100) -> str:
+    async def get_invoices(self, search: str = "", status_filter: str = "", client_id: str = "", user_id: Optional[str] = None, skip: int = 0, limit: int = 100) -> str:
         """
         Retrieve a list of invoices with optional filtering
         
@@ -303,6 +303,7 @@ class InvoiceTools:
             search: Optional search text to filter by invoice number or client ID
             status_filter: Filter by status: draft, sent, paid, overdue, cancelled
             client_id: Filter by client ID
+            user_id: Filter by user ID (required for security)
             skip: Number of invoices to skip
             limit: Maximum number of invoices to return
             
@@ -335,6 +336,10 @@ class InvoiceTools:
             # Add client ID filter
             if client_id:
                 query_dict["clientId"] = client_id
+
+            # Add user ID filter
+            if user_id:
+                query_dict["userId"] = user_id
 
             # Get total count
             total = await invoices_collection.count_documents(query_dict)
@@ -376,12 +381,13 @@ class InvoiceTools:
         description="Get a specific invoice by ID",
         name="get_invoice_by_id"
     )
-    async def get_invoice_by_id(self, invoice_id: str) -> str:
+    async def get_invoice_by_id(self, invoice_id: str, user_id: Optional[str] = None) -> str:
         """
         Retrieve a specific invoice by ID
         
         Args:
             invoice_id: Invoice ID to retrieve
+            user_id: Filter by user ID (required for security)
             
         Returns:
             JSON string containing the invoice details
@@ -393,7 +399,10 @@ class InvoiceTools:
             invoices_collection = get_invoices_collection()
 
             try:
-                invoice_doc = await invoices_collection.find_one({"_id": ObjectId(invoice_id)})
+                query = {"_id": ObjectId(invoice_id)}
+                if user_id:
+                    query["userId"] = user_id
+                invoice_doc = await invoices_collection.find_one(query)
             except:
                 return json.dumps({"error": "Invalid invoice ID format"})
 
