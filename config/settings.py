@@ -20,8 +20,8 @@ class Settings(BaseSettings):
     debug: bool = True
     
     # Database Configuration
-    database_url: str = "mongodb://mongo:sBfYimepFGfjmbhWZkuiyqztWUJvZwTb@gondola.proxy.rlwy.net:57000"
-    database_name: str = "devai"
+    database_url: str = os.getenv("DATABASE_URL", "")
+    database_name: str = os.getenv("DATABASE_NAME", "")
     
     # Semantic Kernel Configuration
     sk_log_level: str = "INFO"
