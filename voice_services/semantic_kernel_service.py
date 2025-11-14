@@ -21,6 +21,7 @@ from tools.customer_tools import CustomerTools
 from tools.quote_tools import QuoteTools
 from tools.job_tools import JobTools
 from tools.expense_tools import ExpenseTools
+from tools.manual_task_tools import ManualTaskTools
 
 class SemanticKernelService:
     """
@@ -41,6 +42,7 @@ class SemanticKernelService:
         self.quote_tools: Optional[QuoteTools] = None
         self.job_tools: Optional[JobTools] = None
         self.expense_tools: Optional[ExpenseTools] = None
+        self.manual_task_tools: Optional[ManualTaskTools] = None
         
         # Configure logging
         logging.basicConfig(level=getattr(logging, settings.sk_log_level))
@@ -79,6 +81,7 @@ class SemanticKernelService:
             self.kernel.add_plugin(self.quote_tools, plugin_name="quote")
             self.kernel.add_plugin(self.job_tools, plugin_name="job")
             self.kernel.add_plugin(self.expense_tools, plugin_name="expense")
+            self.kernel.add_plugin(self.manual_task_tools, plugin_name="manual_task")
             
             self._initialized = True
             self.logger.info("Semantic Kernel service initialized successfully")
@@ -94,10 +97,11 @@ class SemanticKernelService:
         self.quote_tools = QuoteTools(self.settings)
         self.job_tools = JobTools(self.settings)
         self.expense_tools = ExpenseTools(self.settings)
+        self.manual_task_tools = ManualTaskTools(self.settings)
         
         # Initialize tools if they have async initialization
         for tool in [self.invoice_tools, self.customer_tools, self.quote_tools, 
-                    self.job_tools, self.expense_tools]:
+                    self.job_tools, self.expense_tools, self.manual_task_tools]:
             if hasattr(tool, 'initialize'):
                 await tool.initialize()
     
@@ -312,6 +316,44 @@ class SemanticKernelService:
             return {
                 "success": False,
                 "message": f"Failed to track expense: {str(e)}",
+                "errors": [str(e)]
+            }
+    
+    async def process_manual_task_request(self, prompt: str, context: Optional[Dict[str, Any]] = None, language: str = "en") -> Dict[str, Any]:
+        """
+        Process manual task creation request using AI agent
+        
+        Args:
+            prompt: Natural language description of the manual task
+            context: Optional context data (task details, etc.)
+            language: Response language (en/fr)
+        
+        Returns:
+            Dictionary containing the processed manual task data or error information
+        """
+        try:
+            self.logger.info(f"Processing manual task request: {prompt[:100]}...")
+            
+            # Create system prompt for manual task creation
+            system_prompt = self._get_manual_task_system_prompt(language)
+            
+            # Prepare the full prompt with context
+            full_prompt = self._prepare_prompt_with_context(prompt, context, "manual_task", language)
+            
+            # Execute with Semantic Kernel
+            result = await self._execute_agent_request(system_prompt, full_prompt, "manual_task")
+            
+            return {
+                "success": True,
+                "message": "Manual task created successfully" if language == "en" else "Tâche manuelle créée avec succès",
+                "data": result
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Manual task processing failed: {e}")
+            return {
+                "success": False,
+                "message": f"Failed to create manual task: {str(e)}",
                 "errors": [str(e)]
             }
     
@@ -637,6 +679,39 @@ INSTRUCTIONS:
 6. Return structured data as JSON
 
 ALWAYS return valid JSON with expense structure."""
+    
+    def _get_manual_task_system_prompt(self, language: str) -> str:
+        """Get system prompt for manual task processing"""
+        return f"""You are an AI assistant for manual task management and planning.
+        
+LANGUAGE: Use {language} (English/French) for responses.
+
+ROLE: Analyze manual task descriptions to create structured internal task data.
+
+AVAILABLE FUNCTIONS:
+- manual_task.extract_task_info: Extract task information from text
+- manual_task.set_priority: Set task priority level
+- manual_task.set_color: Set task color for visual organization
+- manual_task.parse_schedule: Parse date and time information
+- manual_task.create_task: Create a new manual task
+
+INSTRUCTIONS:
+1. Analyze text to identify task information (title, timing, priority)
+2. Extract color information if mentioned (red, blue, green, yellow, etc.)
+3. Parse date/time information (tomorrow, specific dates, time ranges)
+4. Determine task priority (high, medium, low)
+5. Extract duration or time blocks (9-5, 2 hours, etc.)
+6. Generate unique task ID
+7. Return structured task data as JSON
+
+TASK TYPES:
+- Internal planning tasks
+- Team coordination
+- Personal reminders
+- Maintenance tasks
+- Color-coded organization tasks
+
+ALWAYS return valid JSON with manual task structure."""
     
     def is_initialized(self) -> bool:
         """Check if the service is properly initialized"""

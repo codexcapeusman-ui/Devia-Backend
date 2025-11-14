@@ -115,3 +115,6 @@ def get_jobs_collection():
 
 def get_meetings_collection():
     return db.database.meetings
+
+def get_manual_tasks_collection():
+    return db.database.manual_tasks

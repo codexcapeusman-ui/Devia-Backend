@@ -5,6 +5,7 @@ Handles single prompt workflow with intent detection, data extraction, and respo
 
 import json
 import logging
+import uuid
 from typing import Dict, Any, Optional, List, Tuple
 from datetime import datetime
 from enum import Enum
@@ -15,15 +16,17 @@ from tools.invoice_tools import InvoiceTools
 from tools.quote_tools import QuoteTools
 from tools.job_tools import JobTools
 from tools.expense_tools import ExpenseTools
+from tools.manual_task_tools import ManualTaskTools
 from config.settings import Settings
 
 class Intent(str, Enum):
-    """Supported intents for AI agent"""
+    """Supported intents for AI agent - Order matters for priority"""
+    MANUAL_TASK = "manual_task"  # HIGH PRIORITY - Check first
+    CUSTOMER = "customer"
     INVOICE = "invoice"
     QUOTE = "quote"
-    CUSTOMER = "customer"
-    JOB = "job"
     EXPENSE = "expense"
+    JOB = "job"  # LOWER PRIORITY - Check last
     UNKNOWN = "unknown"
 
 class Operation(str, Enum):
@@ -64,26 +67,30 @@ class UnifiedAgentService:
         self.quote_tools = QuoteTools(settings)
         self.job_tools = JobTools(settings)
         self.expense_tools = ExpenseTools(settings)
+        self.manual_task_tools = ManualTaskTools(settings)
         
         # In-memory conversation storage (replace with database in production)
         self.conversations: Dict[str, Dict] = {}
         
-        # Required fields for each intent
+        # Required fields for each intent - Ordered by priority
         self.required_fields = {
+            Intent.MANUAL_TASK: [
+                "title", "start_time", "end_time"
+            ],
+            Intent.CUSTOMER: [
+                "name", "email", "phone", "address"
+            ],
             Intent.INVOICE: [
                 "customer_name", "customer_email", "items", "total_amount"
             ],
             Intent.QUOTE: [
                 "customer_name", "customer_email", "services", "estimated_total"
             ],
-            Intent.CUSTOMER: [
-                "name", "email", "phone", "address"
+            Intent.EXPENSE: [
+                "description", "amount", "date", "category"
             ],
             Intent.JOB: [
                 "title", "customer_name", "scheduled_date", "duration"
-            ],
-            Intent.EXPENSE: [
-                "description", "amount", "date", "category"
             ]
         }
     
@@ -267,40 +274,81 @@ class UnifiedAgentService:
         
         User prompt: "{prompt}"
         
-        IMPORTANT: If the user is asking to VIEW/SHOW/LIST/GET existing data, use operation "get".
-        If the user is asking to CREATE/ADD new data, use operation "create".
+        INTENT DETECTION PRIORITY ORDER (Check in this order):
+        1. MANUAL_TASK (Highest Priority)
+        2. CUSTOMER
+        3. INVOICE 
+        4. QUOTE
+        5. EXPENSE
+        6. JOB (Lowest Priority - only if no other intent matches)
         
-        Available intents:
-        - invoice: Related to invoices, billing, payments
-        - quote: Related to quotes/estimates, proposals, pricing
-        - customer: Related to customer data, clients, contacts
-        - job: Related to jobs/appointments, scheduling, tasks, meetings
-        - expense: Related to expenses, costs, receipts, spending
-        - unknown: Intent unclear or not supported
-        
-        Available operations:
-        - get: Retrieving/viewing existing data (show, list, get, display, find, see, view, retrieve, "all my", "my clients", "my invoices")
-        - create: Creating new data (create, add, schedule, book, make, generate, "new client", "add client")
+        OPERATIONS:
+        - get: Viewing/retrieving existing data (show, list, get, display, find, see, view, retrieve, "all my")
+        - create: Creating new data (create, add, schedule, book, make, generate, new)
         - update: Modifying existing data (update, change, modify, edit, adjust)
         - delete: Removing data (delete, remove, cancel, eliminate)
-        - unknown: Operation unclear
         
-        Examples:
-        - "show all my clients" -> customer, get
-        - "i want to see all my current clients" -> customer, get
-        - "list my invoices" -> invoice, get
-        - "get my jobs" -> job, get
-        - "display my expenses" -> expense, get
-        - "create new client" -> customer, create
-        - "add a new invoice" -> invoice, create
-        - "schedule meeting" -> job, create
+        MANUAL_TASK INDICATORS (Check FIRST - Highest Priority):
+        ✅ Color words: red, blue, green, yellow, orange, purple, pink, black, white, gray
+        ✅ Task language: "task", "manual task", "planning", "reminder", "internal"
+        ✅ Personal/team context: "my task", "remind me", "team meeting", "internal planning"
+        ✅ Non-client work: No specific client names mentioned
+        ✅ Planning context: "work task", "maintenance task", "planning task"
+        ✅ Time-only scheduling: Just times without client context
+        
+        CUSTOMER INDICATORS:
+        ✅ Client management: "client", "customer", "contact", customer data"
+        ✅ Customer operations: "add client", "show customers", "client information"
+        
+        INVOICE INDICATORS:
+        ✅ Billing: "invoice", "bill", "payment", "charge", "billing"
+        
+        QUOTE INDICATORS:
+        ✅ Estimates: "quote", "estimate", "proposal", "pricing"
+        
+        EXPENSE INDICATORS:
+        ✅ Costs: "expense", "receipt", "cost", "spending", "financial tracking"
+        
+        JOB INDICATORS (Check LAST - Only if no manual_task match):
+        ✅ Client-specific work: "for [ClientName]", "with [ClientName]", specific company names
+        ✅ Billable services: "installation for client", "service appointment", "customer meeting"
+        ✅ Professional appointments: "appointment with client", "customer service call"
+        
+        CRITICAL RULES:
+        🔴 IF color mentioned → ALWAYS manual_task (red task, blue work, green reminder)
+        🔴 IF "task" + no client name → ALWAYS manual_task  
+        🔴 IF "planning" or "reminder" → ALWAYS manual_task
+        🔴 IF client name mentioned → Then consider job
+        🔴 IF just time/date without client → manual_task
+        
+        EXAMPLES - MANUAL_TASK (High Priority):
+        ❌ "create a red placo work task for tomorrow 9-5" → manual_task, create
+        ❌ "add yellow planning task for Monday" → manual_task, create
+        ❌ "make blue reminder task" → manual_task, create
+        ❌ "schedule green work task" → manual_task, create
+        ❌ "create maintenance task for tomorrow" → manual_task, create
+        ❌ "add placo work task" → manual_task, create
+        ❌ "show my manual tasks" → manual_task, get
+        ❌ "list red tasks" → manual_task, get
+        
+        EXAMPLES - JOB (Low Priority):
+        ✅ "schedule website maintenance for ABC Corp" → job, create
+        ✅ "book appointment with John Smith" → job, create
+        ✅ "create meeting for client XYZ" → job, create
+        ✅ "show jobs for ABC Corp" → job, get
+        
+        EXAMPLES - OTHER:
+        ✅ "show my clients" → customer, get
+        ✅ "create invoice" → invoice, create
+        ✅ "add expense" → expense, create
+        ✅ "generate quote" → quote, create
         
         Response format:
         {{
             "intent": "intent_name",
             "operation": "operation_name", 
             "confidence": 0.95,
-            "reasoning": "Brief explanation"
+            "reasoning": "Brief explanation focusing on key indicators found"
         }}
         """
         
@@ -351,15 +399,15 @@ class UnifiedAgentService:
                     operation_str = "unknown"
                     confidence = 0.0
                 
-                # Map strings to enums
+                # Map strings to enums (case-insensitive)
                 try:
-                    intent = Intent(intent_str)
+                    intent = Intent(intent_str.lower())
                 except ValueError:
                     intent = Intent.UNKNOWN
                     confidence = 0.0
                 
                 try:
-                    operation = Operation(operation_str)
+                    operation = Operation(operation_str.lower())
                 except ValueError:
                     operation = Operation.UNKNOWN
                 
@@ -466,6 +514,18 @@ class UnifiedAgentService:
             - receipt_number: Receipt number (optional)
             - vat_rate: VAT rate (default 0.20)
             - vat_amount: VAT amount
+            """,
+            Intent.MANUAL_TASK: """
+            Extract manual task data from this prompt. Return JSON with these fields:
+            - title: Task title/description
+            - start_time: Start date and time (ISO format)
+            - end_time: End date and time (ISO format)
+            - color: Color (hex code, optional, default #ff0000)
+            - client_id: Associated client ID (optional)
+            - assigned_to: Assigned worker/team (optional)
+            - location: Task location/address (optional)
+            - notes: Task notes/details (optional)
+            - is_all_day: Whether this is an all-day task (boolean, optional)
             """
         }
         
@@ -476,8 +536,20 @@ class UnifiedAgentService:
         full_prompt = f"{extract_prompt}\n\nUser prompt: \"{prompt}\"\n\nReturn only valid JSON:"
         
         try:
-            # Use appropriate tool based on intent
-            if intent == Intent.INVOICE:
+            # Use appropriate tool based on intent - MANUAL_TASK gets highest priority
+            if intent == Intent.MANUAL_TASK:
+                result = await self.sk_service.process_manual_task_request(
+                    prompt=full_prompt,
+                    context={"task": "data_extraction"},
+                    language=language
+                )
+            elif intent == Intent.CUSTOMER:
+                result = await self.sk_service.process_customer_request(
+                    prompt=full_prompt,
+                    context={"task": "data_extraction"},
+                    language=language
+                )
+            elif intent == Intent.INVOICE:
                 result = await self.sk_service.process_invoice_request(
                     prompt=full_prompt,
                     context={"task": "data_extraction"},
@@ -489,8 +561,8 @@ class UnifiedAgentService:
                     context={"task": "data_extraction"},
                     language=language
                 )
-            elif intent == Intent.CUSTOMER:
-                result = await self.sk_service.process_customer_request(
+            elif intent == Intent.EXPENSE:
+                result = await self.sk_service.process_expense_request(
                     prompt=full_prompt,
                     context={"task": "data_extraction"},
                     language=language
@@ -501,8 +573,8 @@ class UnifiedAgentService:
                     context={"task": "data_extraction"},
                     language=language
                 )
-            elif intent == Intent.EXPENSE:
-                result = await self.sk_service.process_expense_request(
+            elif intent == Intent.MANUAL_TASK:
+                result = await self.sk_service.process_manual_task_request(
                     prompt=full_prompt,
                     context={"task": "data_extraction"},
                     language=language
@@ -642,6 +714,8 @@ class UnifiedAgentService:
                         result = await self.invoice_tools.get_invoice_by_id(data["id"], user_id=user_id)
                     elif intent == Intent.QUOTE:
                         result = await self.quote_tools.get_quote_by_id(data["id"], user_id=user_id)
+                    elif intent == Intent.MANUAL_TASK:
+                        result = await self.manual_task_tools.get_manual_task_by_id(data["id"], user_id=user_id)
                     else:
                         return {
                             "success": False,
@@ -660,6 +734,8 @@ class UnifiedAgentService:
                         result = await self.invoice_tools.get_invoices(user_id=user_id)
                     elif intent == Intent.QUOTE:
                         result = await self.quote_tools.get_quotes(user_id=user_id)
+                    elif intent == Intent.MANUAL_TASK:
+                        result = await self.manual_task_tools.get_manual_tasks(user_id=user_id)
                     else:
                         return {
                             "success": False,
@@ -775,6 +851,25 @@ class UnifiedAgentService:
                 "vat_amount": data.get("vat_amount", 0),
                 "status": "recorded",
                 "created_at": datetime.now().isoformat()
+            }
+        
+        elif intent == Intent.MANUAL_TASK:
+            base_response["data"] = {
+                "task": {
+                    "id": f"MTK-{datetime.now().strftime('%Y%m%d')}-{uuid.uuid4().hex[:6].upper()}",
+                    "title": data.get("title", ""),
+                    "userId": data.get("userId", ""),
+                    "clientId": data.get("clientId"),
+                    "startTime": data.get("start_time", ""),
+                    "endTime": data.get("end_time", ""),
+                    "color": data.get("color", "#ff0000"),
+                    "notes": data.get("notes", ""),
+                    "assignedTo": data.get("assignedTo"),
+                    "location": data.get("location", ""),
+                    "isAllDay": data.get("isAllDay", False),
+                    "createdAt": datetime.now().isoformat(),
+                    "updatedAt": datetime.now().isoformat()
+                }
             }
         
         return base_response

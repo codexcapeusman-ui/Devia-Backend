@@ -21,6 +21,7 @@ from tools.customer_tools import CustomerTools
 from tools.quote_tools import QuoteTools
 from tools.job_tools import JobTools
 from tools.expense_tools import ExpenseTools
+from tools.manual_task_tools import ManualTaskTools
 
 class SemanticKernelService:
     """
@@ -41,6 +42,7 @@ class SemanticKernelService:
         self.quote_tools: Optional[QuoteTools] = None
         self.job_tools: Optional[JobTools] = None
         self.expense_tools: Optional[ExpenseTools] = None
+        self.manual_task_tools: Optional[ManualTaskTools] = None
         
         # Configure logging
         logging.basicConfig(level=getattr(logging, settings.sk_log_level))
@@ -79,6 +81,7 @@ class SemanticKernelService:
             self.kernel.add_plugin(self.quote_tools, plugin_name="quote")
             self.kernel.add_plugin(self.job_tools, plugin_name="job")
             self.kernel.add_plugin(self.expense_tools, plugin_name="expense")
+            self.kernel.add_plugin(self.manual_task_tools, plugin_name="manual_task")
             
             self._initialized = True
             self.logger.info("Semantic Kernel service initialized successfully")
@@ -94,10 +97,11 @@ class SemanticKernelService:
         self.quote_tools = QuoteTools(self.settings)
         self.job_tools = JobTools(self.settings)
         self.expense_tools = ExpenseTools(self.settings)
+        self.manual_task_tools = ManualTaskTools(self.settings)
         
         # Initialize tools if they have async initialization
         for tool in [self.invoice_tools, self.customer_tools, self.quote_tools, 
-                    self.job_tools, self.expense_tools]:
+                    self.job_tools, self.expense_tools, self.manual_task_tools]:
             if hasattr(tool, 'initialize'):
                 await tool.initialize()
     
@@ -312,6 +316,44 @@ class SemanticKernelService:
             return {
                 "success": False,
                 "message": f"Failed to track expense: {str(e)}",
+                "errors": [str(e)]
+            }
+
+    async def process_manual_task_request(self, prompt: str, context: Optional[Dict[str, Any]] = None, language: str = "en") -> Dict[str, Any]:
+        """
+        Process manual task creation request using AI agent
+        
+        Args:
+            prompt: Natural language description of the manual task
+            context: Optional context data
+            language: Response language (en/fr)
+        
+        Returns:
+            Dictionary containing the processed manual task data or error information
+        """
+        try:
+            self.logger.info(f"Processing manual task request: {prompt[:100]}...")
+            
+            # Create system prompt for manual task
+            system_prompt = self._get_manual_task_system_prompt(language)
+            
+            # Prepare the full prompt with context
+            full_prompt = self._prepare_prompt_with_context(prompt, context, "manual_task", language)
+            
+            # Execute with Semantic Kernel
+            result = await self._execute_agent_request(system_prompt, full_prompt, "manual_task")
+            
+            return {
+                "success": True,
+                "message": "Manual task created successfully" if language == "en" else "Tâche manuelle créée avec succès",
+                "data": result
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Manual task processing failed: {e}")
+            return {
+                "success": False,
+                "message": f"Failed to process manual task: {str(e)}",
                 "errors": [str(e)]
             }
     
@@ -544,26 +586,29 @@ ALWAYS return valid JSON with a quote structure."""
     def _get_job_system_prompt(self, language: str) -> str:
         """Get system prompt for job scheduling agent"""
         if language == "fr":
-            return """Tu es un assistant IA spécialisé dans la gestion complète de calendrier et d'affaires pour Devia.
+            return """Tu es un assistant IA spécialisé dans la gestion des TRAVAUX CLIENTS et rendez-vous professionnels pour Devia.
 
-RÔLE: Analyser les demandes en langage naturel et gérer jobs, réunions, clients, dépenses, factures et devis.
+RÔLE: Gérer uniquement le travail FACTURABLE et les rendez-vous CLIENTS. 
+
+IMPORTANT: Les "jobs" sont UNIQUEMENT pour le travail client facturable et les rendez-vous professionnels.
+Pour les tâches internes/planification personnelle, utilisez les tâches manuelles (manual_task).
 
 FONCTIONS DISPONIBLES:
 DATA RETRIEVAL (retourne données réelles de la base):
-- job.get_jobs: Récupérer la liste des jobs
-- job.get_meetings: Récupérer les réunions
+- job.get_jobs: Récupérer la liste des jobs clients
+- job.get_meetings: Récupérer les réunions professionnelles
 - job.get_clients: Récupérer les clients
 - job.get_expenses: Récupérer les dépenses
 - job.get_invoices: Récupérer les factures
 - job.get_quotes: Récupérer les devis
 
 API OPERATIONS (retourne structures d'appel API):
-- job.create_job_api_call: Créer un job
-- job.update_job_api_call: Modifier un job
-- job.delete_job_api_call: Supprimer un job
-- job.create_meeting_api_call: Créer une réunion
-- job.update_meeting_api_call: Modifier une réunion
-- job.delete_meeting_api_call: Supprimer une réunion
+- job.create_job_api_call: Créer un travail client
+- job.update_job_api_call: Modifier un travail client
+- job.delete_job_api_call: Supprimer un travail client
+- job.create_meeting_api_call: Créer une réunion professionnelle
+- job.update_meeting_api_call: Modifier une réunion professionnelle
+- job.delete_meeting_api_call: Supprimer une réunion professionnelle
 
 LEGACY FUNCTIONS (toujours disponibles):
 - job.create_job_from_text: Créer un travail à partir du texte
@@ -571,6 +616,12 @@ LEGACY FUNCTIONS (toujours disponibles):
 - job.validate_schedule: Valider le planning
 - job.suggest_optimal_times: Suggérer des créneaux optimaux
 - job.reschedule_job: Replanifier un travail existant
+
+CARACTÉRISTIQUES DES JOBS CLIENTS:
+- Toujours associés à un client spécifique
+- Travail facturable et professionnel
+- Rendez-vous et services clients
+- Pas de codage couleur (contrairement aux tâches manuelles)
 
 INSTRUCTIONS:
 1. Pour CONSULTER des données, utiliser les fonctions get_* (retournent données réelles).
@@ -581,26 +632,29 @@ INSTRUCTIONS:
 
 TOUJOURS retourner un JSON valide avec la structure appropriée."""
         else:
-            return """You are an AI assistant specialized in comprehensive calendar and business management for Devia.
+            return """You are an AI assistant specialized in CLIENT WORK and professional appointments management for Devia.
 
-ROLE: Analyze natural language requests and manage jobs, meetings, clients, expenses, invoices, and quotes.
+ROLE: Manage only BILLABLE work and CLIENT appointments.
+
+IMPORTANT: "Jobs" are ONLY for billable client work and professional appointments.
+For internal tasks/personal planning, use manual tasks (manual_task).
 
 AVAILABLE FUNCTIONS:
 DATA RETRIEVAL (returns real database data):
-- job.get_jobs: Retrieve jobs list
-- job.get_meetings: Retrieve meetings
+- job.get_jobs: Retrieve client jobs list
+- job.get_meetings: Retrieve professional meetings
 - job.get_clients: Retrieve clients
 - job.get_expenses: Retrieve expenses
 - job.get_invoices: Retrieve invoices
 - job.get_quotes: Retrieve quotes
 
 API OPERATIONS (returns API call structures):
-- job.create_job_api_call: Create a job
-- job.update_job_api_call: Update a job
-- job.delete_job_api_call: Delete a job
-- job.create_meeting_api_call: Create a meeting
-- job.update_meeting_api_call: Update a meeting
-- job.delete_meeting_api_call: Delete a meeting
+- job.create_job_api_call: Create a client job
+- job.update_job_api_call: Update a client job
+- job.delete_job_api_call: Delete a client job
+- job.create_meeting_api_call: Create a professional meeting
+- job.update_meeting_api_call: Update a professional meeting
+- job.delete_meeting_api_call: Delete a professional meeting
 
 LEGACY FUNCTIONS (still available):
 - job.create_job_from_text: Create a job from natural language description
@@ -608,6 +662,12 @@ LEGACY FUNCTIONS (still available):
 - job.validate_schedule: Validate schedule feasibility
 - job.suggest_optimal_times: Suggest optimal time slots
 - job.reschedule_job: Reschedule an existing job
+
+CLIENT JOB CHARACTERISTICS:
+- Always associated with a specific client
+- Billable and professional work
+- Client appointments and services
+- No color coding (unlike manual tasks)
 
 INSTRUCTIONS:
 1. For VIEWING data, use get_* functions (return real data).
@@ -668,6 +728,67 @@ INSTRUCTIONS:
 4. Return structured data as JSON, ready for the API.
 
 ALWAYS return valid JSON with an expense structure."""
+    
+    def _get_manual_task_system_prompt(self, language: str) -> str:
+        """Get system prompt for manual task agent"""
+        if language == "fr":
+            return """Tu es un assistant IA spécialisé dans la création et la gestion des tâches manuelles INTERNES pour Devia.
+
+RÔLE: Analyser les demandes des utilisateurs pour créer des tâches manuelles structurées pour la planification interne uniquement.
+
+IMPORTANT: Les tâches manuelles sont UNIQUEMENT pour la planification interne, les rappels personnels, et l'organisation d'équipe.
+CE NE SONT PAS des rendez-vous clients ou du travail facturable.
+
+FONCTIONS DISPONIBLES:
+- manual_task.create_manual_task_api_call: Créer une tâche manuelle à partir d'une description textuelle
+- manual_task.update_manual_task_api_call: Mettre à jour une tâche manuelle
+- manual_task.delete_manual_task_api_call: Supprimer une tâche manuelle
+- manual_task.get_manual_tasks: Lister les tâches manuelles
+- manual_task.get_manual_task_by_id: Récupérer une tâche manuelle par ID
+- manual_task.get_manual_tasks_by_date_range: Lister les tâches pour une période donnée
+
+CARACTÉRISTIQUES DES TÂCHES MANUELLES:
+- Codage couleur pour l'organisation visuelle (rouge, bleu, vert, jaune, etc.)
+- Planification interne et rappels personnels
+- Coordination d'équipe et réunions internes
+- Pas de facturation client (contrairement aux "jobs")
+
+INSTRUCTIONS:
+1. Analyser le texte pour identifier titre, dates de début/fin, couleur, lieu, notes.
+2. Extraire les détails comme couleur (ex: rouge, bleu), durée, lieu du travail.
+3. Retourner les données structurées en JSON pour l'API des tâches manuelles.
+4. Les tâches manuelles sont destinées à la planification interne, pas à la facturation cliente.
+
+TOUJOURS retourner un JSON valide avec la structure de tâche manuelle."""
+        else:
+            return """You are an AI assistant specialized in creating and managing INTERNAL manual tasks for Devia.
+
+ROLE: Analyze user requests to create structured manual tasks for internal planning purposes only.
+
+IMPORTANT: Manual tasks are ONLY for internal planning, personal reminders, and team organization.
+They are NOT client appointments or billable work.
+
+AVAILABLE FUNCTIONS:
+- manual_task.create_manual_task_api_call: Create a manual task from natural language description
+- manual_task.update_manual_task_api_call: Update an existing manual task
+- manual_task.delete_manual_task_api_call: Delete a manual task
+- manual_task.get_manual_tasks: List manual tasks
+- manual_task.get_manual_task_by_id: Get manual task by ID
+- manual_task.get_manual_tasks_by_date_range: List tasks for a specific date range
+
+MANUAL TASK CHARACTERISTICS:
+- Color coding for visual organization (red, blue, green, yellow, etc.)
+- Internal planning and personal reminders
+- Team coordination and internal meetings
+- No client billing (unlike "jobs")
+
+INSTRUCTIONS:
+1. Analyze the text to identify title, start/end times, color, location, and notes.
+2. Extract details like color (e.g., red, blue), duration, work location.
+3. Return structured data as JSON, ready for the manual task API.
+4. Manual tasks are for internal planning only, not for client billing.
+
+ALWAYS return valid JSON with a manual task structure."""
     
     def is_initialized(self) -> bool:
         """Check if the service is properly initialized"""
