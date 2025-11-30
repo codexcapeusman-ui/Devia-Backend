@@ -1,6 +1,13 @@
 """
 Quote generation tools for Semantic Kernel
-These tools handle quote creation, item extraction, and calculations
+These tools handle comprehensive quote creation, management, and calculations with support for:
+- Client information (name, email, company type)
+- Project details (name, street address, ZIP code, city)
+- Discount types (fixed amount or percentage)
+- Down payments (fixed amount or percentage)
+- Multiple note types (internal, public)
+- Signatures (contractor and client)
+- Enhanced VAT calculations and item management
 """
 
 from semantic_kernel.functions import kernel_function
@@ -17,8 +24,17 @@ from models.quotes import Quote, QuoteItem, QuoteStatus, QuoteItemType
 
 class QuoteTools:
     """
-    Semantic Kernel tools for quote generation and management
-    Provides AI-powered quote creation from natural language prompts
+    Semantic Kernel tools for comprehensive quote generation and management
+    
+    Provides AI-powered quote creation from natural language prompts with support for:
+    - Complete client information (name, email, company type)
+    - Detailed project information (name, street address, ZIP code, city)
+    - Flexible discount system (fixed amount or percentage)
+    - Down payment handling (fixed amount or percentage)
+    - Multiple note types (internal notes, public notes)
+    - Digital signatures (contractor and client)
+    - Comprehensive VAT calculations
+    - Item management with detailed descriptions and types
     """
     
     def __init__(self, settings: Settings):
@@ -31,15 +47,16 @@ class QuoteTools:
     # ===== CREATE/UPDATE/DELETE TOOLS (Return structured responses for frontend verification) =====
 
     @kernel_function(
-        description="Create a new quote from natural language description",
+        description="Create a new quote from natural language description with support for all quote fields",
         name="create_quote"
     )
-    def create_quote(self, description: str) -> str:
+    def create_quote(self, description: str, user_id: str = None) -> str:
         """
-        Create a new quote from text description
+        Create a new quote from text description with comprehensive field extraction
         
         Args:
             description: Natural language description of the quote
+            user_id: User ID for the quote (optional, can be extracted from context)
             
         Returns:
             JSON string for frontend verification before API call
@@ -51,12 +68,42 @@ class QuoteTools:
             # Extract client information
             client_data = self._extract_client_from_description(description)
             
+            # Extract project information
+            project_data = self._extract_project_from_description(description)
+            
+            # Extract quote details
+            quote_title = self._extract_title_from_description(description)
+            
+            # Extract discount information
+            discount_data = self._extract_discount_data_from_description(description)
+            
+            # Extract down payment information
+            down_payment_data = self._extract_down_payment_from_description(description)
+            
+            # Extract notes
+            notes_data = self._extract_notes_data_from_description(description)
+            
             # Calculate totals
             subtotal = sum(item["total"] for item in items)
-            discount = self._extract_discount_from_description(description)
+            discount = discount_data["amount"]
             vat_rate = self._extract_vat_rate_from_description(description) or self.default_vat_rate
-            vat_amount = (subtotal - discount) * (vat_rate / 100)
-            total = subtotal - discount + vat_amount
+            
+            # Apply discount based on type
+            if discount_data["type"] == "PERCENTAGE":
+                discount_amount = subtotal * (discount / 100)
+            else:
+                discount_amount = discount
+            
+            vat_amount = (subtotal - discount_amount) * (vat_rate / 100)
+            total_before_down_payment = subtotal - discount_amount + vat_amount
+            
+            # Apply down payment
+            if down_payment_data["type"] == "PERCENTAGE":
+                down_payment_amount = total_before_down_payment * (down_payment_data["amount"] / 100)
+            else:
+                down_payment_amount = down_payment_data["amount"]
+            
+            total = total_before_down_payment - down_payment_amount
             
             # Generate quote number
             quote_number = self._generate_quote_number()
@@ -70,8 +117,17 @@ class QuoteTools:
                 "endpoint": "/api/quotes/",
                 "method": "POST",
                 "data": {
-                    "clientId": client_data.get("id", str(uuid.uuid4())),
+                    "userId": user_id or str(uuid.uuid4()),
+                    "clientId": client_data.get("id"),
+                    "clientName": client_data.get("name"),
+                    "clientEmail": client_data.get("email"),
+                    "clientCompanyType": client_data.get("company_type", "COMPANY"),
                     "number": quote_number,
+                    "title": quote_title,
+                    "projectName": project_data.get("name") or "Project",
+                    "projectStreetAddress": project_data.get("street_address"),
+                    "projectZipCode": project_data.get("zip_code"),
+                    "projectCity": project_data.get("city"),
                     "items": [
                         {
                             "id": item["id"],
@@ -82,16 +138,29 @@ class QuoteTools:
                             "type": item["type"]
                         } for item in items
                     ],
-                    "discount": round(discount, 2),
+                    "discount": round(discount_data["amount"], 2),
+                    "discountType": discount_data["type"],
+                    "downPayment": round(down_payment_data["amount"], 2),
+                    "downPaymentType": down_payment_data["type"],
                     "vatRate": vat_rate,
                     "validUntil": valid_until.isoformat() if valid_until else (datetime.now() + timedelta(days=30)).isoformat(),
-                    "notes": self._extract_notes_from_description(description)
+                    "internalNotes": notes_data.get("internal"),
+                    "publicNotes": notes_data.get("public")
                 },
                 "preview": {
                     "quote": {
                         "id": str(uuid.uuid4()),
-                        "clientId": client_data.get("id", str(uuid.uuid4())),
+                        "userId": user_id or str(uuid.uuid4()),
+                        "clientId": client_data.get("id"),
+                        "clientName": client_data.get("name"),
+                        "clientEmail": client_data.get("email"),
+                        "clientCompanyType": client_data.get("company_type", "COMPANY"),
                         "number": quote_number,
+                        "title": quote_title,
+                        "projectName": project_data.get("name") or "Project",
+                        "projectStreetAddress": project_data.get("street_address"),
+                        "projectZipCode": project_data.get("zip_code"),
+                        "projectCity": project_data.get("city"),
                         "items": [
                             {
                                 "id": item["id"],
@@ -103,13 +172,17 @@ class QuoteTools:
                             } for item in items
                         ],
                         "subtotal": round(subtotal, 2),
-                        "discount": round(discount, 2),
+                        "discount": round(discount_data["amount"], 2),
+                        "discountType": discount_data["type"],
+                        "downPayment": round(down_payment_data["amount"], 2),
+                        "downPaymentType": down_payment_data["type"],
                         "vatRate": vat_rate,
                         "vatAmount": round(vat_amount, 2),
                         "total": round(total, 2),
                         "status": "draft",
                         "validUntil": valid_until.isoformat() if valid_until else (datetime.now() + timedelta(days=30)).isoformat(),
-                        "notes": self._extract_notes_from_description(description),
+                        "internalNotes": notes_data.get("internal"),
+                        "publicNotes": notes_data.get("public"),
                         "createdAt": datetime.now().isoformat(),
                         "updatedAt": datetime.now().isoformat()
                     }
@@ -122,12 +195,12 @@ class QuoteTools:
             return json.dumps({"error": f"Failed to create quote: {str(e)}"})
 
     @kernel_function(
-        description="Update an existing quote",
+        description="Update an existing quote with support for all quote fields",
         name="update_quote"
     )
     def update_quote(self, quote_id: str, description: str) -> str:
         """
-        Update an existing quote based on description
+        Update an existing quote based on description with comprehensive field support
         
         Args:
             quote_id: ID of the quote to update
@@ -154,6 +227,31 @@ class QuoteTools:
                     update_data["status"] = status
                     break
             
+            # Check for client information changes
+            client_data = self._extract_client_from_description(description)
+            if client_data.get("name"):
+                update_data["clientName"] = client_data["name"]
+            if client_data.get("email"):
+                update_data["clientEmail"] = client_data["email"]
+            if client_data.get("company_type"):
+                update_data["clientCompanyType"] = client_data["company_type"]
+            
+            # Check for title changes
+            title = self._extract_title_from_description(description)
+            if title:
+                update_data["title"] = title
+            
+            # Check for project information changes
+            project_data = self._extract_project_from_description(description)
+            if project_data.get("name"):
+                update_data["projectName"] = project_data["name"]
+            if project_data.get("street_address"):
+                update_data["projectStreetAddress"] = project_data["street_address"]
+            if project_data.get("zip_code"):
+                update_data["projectZipCode"] = project_data["zip_code"]
+            if project_data.get("city"):
+                update_data["projectCity"] = project_data["city"]
+            
             # Check for new items
             items = self._extract_items_from_description(description)
             if items:
@@ -169,9 +267,16 @@ class QuoteTools:
                 ]
             
             # Check for discount changes
-            discount = self._extract_discount_from_description(description)
-            if discount > 0:
-                update_data["discount"] = discount
+            discount_data = self._extract_discount_data_from_description(description)
+            if discount_data["amount"] > 0:
+                update_data["discount"] = discount_data["amount"]
+                update_data["discountType"] = discount_data["type"]
+            
+            # Check for down payment changes
+            down_payment_data = self._extract_down_payment_from_description(description)
+            if down_payment_data["amount"] > 0:
+                update_data["downPayment"] = down_payment_data["amount"]
+                update_data["downPaymentType"] = down_payment_data["type"]
             
             # Check for VAT rate changes
             vat_rate = self._extract_vat_rate_from_description(description)
@@ -183,10 +288,12 @@ class QuoteTools:
             if valid_until:
                 update_data["validUntil"] = valid_until.isoformat()
             
-            # Check for notes
-            notes = self._extract_notes_from_description(description)
-            if notes:
-                update_data["notes"] = notes
+            # Check for notes changes
+            notes_data = self._extract_notes_data_from_description(description)
+            if notes_data.get("internal"):
+                update_data["internalNotes"] = notes_data["internal"]
+            if notes_data.get("public"):
+                update_data["publicNotes"] = notes_data["public"]
             
             # Check for quote number changes
             number = self._extract_quote_number_from_description(description)
@@ -285,7 +392,9 @@ class QuoteTools:
             JSON string containing the list of quotes
         """
         try:
-            from database import get_quotes_collection
+            print(f"[DEBUG] QuoteTools.get_quotes() - User ID: {user_id} (type: {type(user_id)})")
+            from database import get_quotes_collection, is_connected
+            print(f"[DEBUG] QuoteTools.get_quotes() - Database connected: {is_connected()}")
             from bson import ObjectId
             
             quotes_collection = get_quotes_collection()
@@ -313,9 +422,16 @@ class QuoteTools:
 
             # Add user ID filter (required for security)
             query_dict["userId"] = user_id
+            
+            print(f"[DEBUG] Quote query: {query_dict}")
+            
+            # Check total documents in collection
+            total_docs = await quotes_collection.count_documents({})
+            print(f"[DEBUG] Total quotes in collection: {total_docs}")
 
             # Get total count
             total = await quotes_collection.count_documents(query_dict)
+            print(f"[DEBUG] Quotes matching query: {total}")
 
             # Get quotes with pagination
             quotes_cursor = quotes_collection.find(query_dict).skip(skip).limit(limit).sort("createdAt", -1)
@@ -324,17 +440,32 @@ class QuoteTools:
                 # Convert to response format
                 quote_response = {
                     "id": str(quote_doc["_id"]),
+                    "userId": quote_doc.get("userId", ""),
                     "clientId": quote_doc.get("clientId", ""),
+                    "clientName": quote_doc.get("clientName", ""),
+                    "clientEmail": quote_doc.get("clientEmail", ""),
+                    "clientCompanyType": quote_doc.get("clientCompanyType", "COMPANY"),
                     "number": quote_doc.get("number", ""),
+                    "title": quote_doc.get("title", ""),
+                    "projectName": quote_doc.get("projectName", ""),
+                    "projectStreetAddress": quote_doc.get("projectStreetAddress"),
+                    "projectZipCode": quote_doc.get("projectZipCode"),
+                    "projectCity": quote_doc.get("projectCity"),
                     "items": quote_doc.get("items", []),
                     "subtotal": quote_doc.get("subtotal", 0.0),
                     "discount": quote_doc.get("discount", 0.0),
+                    "discountType": quote_doc.get("discountType", "FIXED"),
+                    "downPayment": quote_doc.get("downPayment", 0.0),
+                    "downPaymentType": quote_doc.get("downPaymentType", "PERCENTAGE"),
                     "vatRate": quote_doc.get("vatRate", 20.0),
                     "vatAmount": quote_doc.get("vatAmount", 0.0),
                     "total": quote_doc.get("total", 0.0),
                     "status": quote_doc.get("status", "draft"),
                     "validUntil": quote_doc.get("validUntil", "").isoformat() if isinstance(quote_doc.get("validUntil"), datetime) else quote_doc.get("validUntil", ""),
-                    "notes": quote_doc.get("notes"),
+                    "internalNotes": quote_doc.get("internalNotes"),
+                    "publicNotes": quote_doc.get("publicNotes"),
+                    "contractorSignature": quote_doc.get("contractorSignature"),
+                    "clientSignature": quote_doc.get("clientSignature"),
                     "createdAt": quote_doc.get("createdAt", "").isoformat() if isinstance(quote_doc.get("createdAt"), datetime) else quote_doc.get("createdAt", ""),
                     "updatedAt": quote_doc.get("updatedAt", "").isoformat() if isinstance(quote_doc.get("updatedAt"), datetime) else quote_doc.get("updatedAt", "")
                 }
@@ -386,17 +517,32 @@ class QuoteTools:
             # Convert to response format
             quote_response = {
                 "id": str(quote_doc["_id"]),
+                "userId": quote_doc.get("userId", ""),
                 "clientId": quote_doc.get("clientId", ""),
+                "clientName": quote_doc.get("clientName", ""),
+                "clientEmail": quote_doc.get("clientEmail", ""),
+                "clientCompanyType": quote_doc.get("clientCompanyType", "COMPANY"),
                 "number": quote_doc.get("number", ""),
+                "title": quote_doc.get("title", ""),
+                "projectName": quote_doc.get("projectName", ""),
+                "projectStreetAddress": quote_doc.get("projectStreetAddress"),
+                "projectZipCode": quote_doc.get("projectZipCode"),
+                "projectCity": quote_doc.get("projectCity"),
                 "items": quote_doc.get("items", []),
                 "subtotal": quote_doc.get("subtotal", 0.0),
                 "discount": quote_doc.get("discount", 0.0),
+                "discountType": quote_doc.get("discountType", "FIXED"),
+                "downPayment": quote_doc.get("downPayment", 0.0),
+                "downPaymentType": quote_doc.get("downPaymentType", "PERCENTAGE"),
                 "vatRate": quote_doc.get("vatRate", 20.0),
                 "vatAmount": quote_doc.get("vatAmount", 0.0),
                 "total": quote_doc.get("total", 0.0),
                 "status": quote_doc.get("status", "draft"),
                 "validUntil": quote_doc.get("validUntil", "").isoformat() if isinstance(quote_doc.get("validUntil"), datetime) else quote_doc.get("validUntil", ""),
-                "notes": quote_doc.get("notes"),
+                "internalNotes": quote_doc.get("internalNotes"),
+                "publicNotes": quote_doc.get("publicNotes"),
+                "contractorSignature": quote_doc.get("contractorSignature"),
+                "clientSignature": quote_doc.get("clientSignature"),
                 "createdAt": quote_doc.get("createdAt", "").isoformat() if isinstance(quote_doc.get("createdAt"), datetime) else quote_doc.get("createdAt", ""),
                 "updatedAt": quote_doc.get("updatedAt", "").isoformat() if isinstance(quote_doc.get("updatedAt"), datetime) else quote_doc.get("updatedAt", "")
             }
@@ -533,38 +679,220 @@ class QuoteTools:
 
     def _extract_discount_from_description(self, description: str) -> float:
         """
-        Extract discount amount from description
+        Extract discount amount from description (legacy method for compatibility)
         """
-        # Pattern for discount amounts
-        discount_patterns = [
+        discount_data = self._extract_discount_data_from_description(description)
+        return discount_data["amount"]
+    
+    def _extract_discount_data_from_description(self, description: str) -> Dict[str, Any]:
+        """
+        Extract discount amount and type from description
+        """
+        discount_data = {
+            "amount": 0.0,
+            "type": "FIXED"
+        }
+        
+        # Pattern for percentage discounts
+        percentage_patterns = [
+            r'discount[:\s]*(\d+(?:\.\d+)?)%',
+            r'(\d+(?:\.\d+)?)%\s*(?:discount|off)'
+        ]
+        
+        for pattern in percentage_patterns:
+            match = re.search(pattern, description, re.IGNORECASE)
+            if match:
+                discount_data["amount"] = float(match.group(1))
+                discount_data["type"] = "PERCENTAGE"
+                return discount_data
+        
+        # Pattern for fixed discount amounts
+        fixed_patterns = [
             r'discount[:\s]*[€$£]?(\d+(?:\.\d+)?)',
             r'(?:less|minus)[:\s]*[€$£]?(\d+(?:\.\d+)?)',
             r'[€$£]?(\d+(?:\.\d+)?)\s*(?:discount|off)'
         ]
         
-        for pattern in discount_patterns:
+        for pattern in fixed_patterns:
             match = re.search(pattern, description, re.IGNORECASE)
             if match:
-                return float(match.group(1))
+                discount_data["amount"] = float(match.group(1))
+                discount_data["type"] = "FIXED"
+                return discount_data
         
-        return 0.0
+        return discount_data
+
+    def _extract_title_from_description(self, description: str) -> str:
+        """
+        Extract quote title from description
+        """
+        # Pattern for quote titles
+        title_patterns = [
+            r'(?:title|subject)[:\s]*([^,.;]+)',
+            r'(?:for|regarding)[:\s]*([^,.;]+)',
+            r'quote[:\s]+for[:\s]*([^,.;]+)'
+        ]
+        
+        for pattern in title_patterns:
+            match = re.search(pattern, description, re.IGNORECASE)
+            if match:
+                return match.group(1).strip().title()
+        
+        return "Professional Services Quote"
+    
+    def _extract_project_from_description(self, description: str) -> Dict[str, Any]:
+        """
+        Extract project information from description
+        """
+        project_data = {
+            "name": "",
+            "street_address": "",
+            "zip_code": "",
+            "city": ""
+        }
+        
+        # Extract project name
+        project_name_patterns = [
+            r'project[:\s]*([^,.;]+)',
+            r'job[:\s]*([^,.;]+)',
+            r'work[:\s]+on[:\s]*([^,.;]+)'
+        ]
+        
+        for pattern in project_name_patterns:
+            match = re.search(pattern, description, re.IGNORECASE)
+            if match:
+                project_data["name"] = match.group(1).strip().title()
+                break
+        
+        # Extract project street address
+        address_patterns = [
+            r'(?:project\s+)?(?:at|address|location)[:\s]*([^,.;]+)',
+            r'(\d+\s+[^,.;]+(?:street|st|avenue|ave|road|rd|drive|dr)[^,.;]*)'
+        ]
+        
+        for pattern in address_patterns:
+            address_match = re.search(pattern, description, re.IGNORECASE)
+            if address_match:
+                project_data["street_address"] = address_match.group(1).strip()
+                break
+        
+        # Extract ZIP code
+        zip_patterns = [
+            r'(\d{4,5}(?:\s*-\s*\d{4})?)',  # US/EU ZIP codes
+            r'(?:zip|postal)[:\s]*(\d{4,5})'
+        ]
+        
+        for pattern in zip_patterns:
+            zip_match = re.search(pattern, description)
+            if zip_match:
+                project_data["zip_code"] = zip_match.group(1).strip()
+                break
+        
+        # Extract city
+        city_patterns = [
+            r'(?:city|in)[:\s]*([A-Z][a-zA-Z\s]+)',
+            r',\s*([A-Z][a-zA-Z\s]+)(?:\s+\d{4,5})?$'  # City at end after comma
+        ]
+        
+        for pattern in city_patterns:
+            city_match = re.search(pattern, description)
+            if city_match:
+                project_data["city"] = city_match.group(1).strip().title()
+                break
+        
+        return project_data
+    
+    def _extract_down_payment_from_description(self, description: str) -> Dict[str, Any]:
+        """
+        Extract down payment information from description
+        """
+        down_payment_data = {
+            "amount": 0.0,
+            "type": "PERCENTAGE"
+        }
+        
+        # Pattern for percentage down payments
+        percentage_patterns = [
+            r'(?:down\s*payment|deposit)[:\s]*(\d+(?:\.\d+)?)%',
+            r'(\d+(?:\.\d+)?)%\s*(?:down|deposit|advance)'
+        ]
+        
+        for pattern in percentage_patterns:
+            match = re.search(pattern, description, re.IGNORECASE)
+            if match:
+                down_payment_data["amount"] = float(match.group(1))
+                down_payment_data["type"] = "PERCENTAGE"
+                return down_payment_data
+        
+        # Pattern for fixed down payment amounts
+        fixed_patterns = [
+            r'(?:down\s*payment|deposit)[:\s]*[€$£]?(\d+(?:\.\d+)?)',
+            r'[€$£]?(\d+(?:\.\d+)?)\s*(?:down|deposit|advance)'
+        ]
+        
+        for pattern in fixed_patterns:
+            match = re.search(pattern, description, re.IGNORECASE)
+            if match:
+                down_payment_data["amount"] = float(match.group(1))
+                down_payment_data["type"] = "FIXED"
+                return down_payment_data
+        
+        return down_payment_data
+    
+    def _extract_notes_data_from_description(self, description: str) -> Dict[str, str]:
+        """
+        Extract different types of notes from description
+        """
+        notes_data = {
+            "internal": "",
+            "public": ""
+        }
+        
+        # Extract internal notes
+        internal_patterns = [
+            r'internal\s*(?:note|notes)[:\s]*([^,.;]+)',
+            r'(?:private|confidential)[:\s]*([^,.;]+)'
+        ]
+        
+        for pattern in internal_patterns:
+            match = re.search(pattern, description, re.IGNORECASE)
+            if match:
+                notes_data["internal"] = match.group(1).strip()
+                break
+        
+        # Extract public notes
+        public_patterns = [
+            r'public\s*(?:note|notes)[:\s]*([^,.;]+)',
+            r'(?:client|customer)\s*(?:note|notes)[:\s]*([^,.;]+)'
+        ]
+        
+        for pattern in public_patterns:
+            match = re.search(pattern, description, re.IGNORECASE)
+            if match:
+                notes_data["public"] = match.group(1).strip()
+                break
+        
+        # If no specific type found, check for general notes and put them as public
+        if not notes_data["internal"] and not notes_data["public"]:
+            general_patterns = [
+                r'(?:note|notes|comment|comments)[:\s]*([^,.;]+)',
+                r'(?:additional|extra|special)[:\s]*([^,.;]+)'
+            ]
+            
+            for pattern in general_patterns:
+                match = re.search(pattern, description, re.IGNORECASE)
+                if match:
+                    notes_data["public"] = match.group(1).strip()
+                    break
+        
+        return notes_data
 
     def _extract_notes_from_description(self, description: str) -> str:
         """
-        Extract notes or additional information from description
+        Extract notes or additional information from description (legacy method for compatibility)
         """
-        # Look for note indicators
-        note_patterns = [
-            r'(?:note|notes|comment|comments)[:\s]*([^,\.;]+)',
-            r'(?:additional|extra|special)[:\s]*([^,\.;]+)'
-        ]
-        
-        for pattern in note_patterns:
-            match = re.search(pattern, description, re.IGNORECASE)
-            if match:
-                return match.group(1).strip()
-        
-        return ""
+        notes_data = self._extract_notes_data_from_description(description)
+        return notes_data.get("public", "") or notes_data.get("internal", "")
 
     def _generate_quote_number(self) -> str:
         """
@@ -684,6 +1012,7 @@ class QuoteTools:
             "phone": "",
             "address": "",
             "company": "",
+            "company_type": "COMPANY",
             "balance": 0.0,
             "status": "active",
             "notes": "",
@@ -737,6 +1066,12 @@ class QuoteTools:
             if company_match:
                 client_data["company"] = company_match.group(1).strip()
                 break
+        
+        # Extract company type
+        if any(word in description.lower() for word in ["individual", "person", "freelancer", "self-employed"]):
+            client_data["company_type"] = "INDIVIDUAL"
+        elif any(word in description.lower() for word in ["company", "corp", "business", "organization"]):
+            client_data["company_type"] = "COMPANY"
         
         return client_data
         try:

@@ -257,6 +257,9 @@ class ManualTaskTools:
             JSON string containing actual manual tasks data from database
         """
         try:
+            print(f"[DEBUG] ManualTaskTools.get_manual_tasks() - User ID: {user_id} (type: {type(user_id)})")
+            from database import is_connected
+            print(f"[DEBUG] ManualTaskTools.get_manual_tasks() - Database connected: {is_connected()}")
             return await self._get_manual_tasks_async(skip, limit, user_id, client_id, start_date, end_date)
         except Exception as e:
             return json.dumps({"error": f"Failed to get manual tasks: {str(e)}", "tasks": [], "total": 0})
@@ -268,6 +271,12 @@ class ManualTaskTools:
             
             # Build query filter
             query = {"userId": user_id}
+            
+            print(f"[DEBUG] Manual task query: {query}")
+            
+            # Check total documents in collection
+            total_docs = await tasks_collection.count_documents({})
+            print(f"[DEBUG] Total manual tasks in collection: {total_docs}")
             
             if client_id:
                 query["clientId"] = client_id

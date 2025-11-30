@@ -1,6 +1,14 @@
 """
 Invoice generation tools for Semantic Kernel
-These tools handle invoice creation, item extraction, and calculations
+These tools handle comprehensive invoice creation, management, and calculations with support for:
+- Client information (name, email, company type)
+- Project details (name, address components)
+- Invoice types (final, interim, advance, credit)
+- Discount types (fixed amount or percentage)
+- Down payments (fixed amount or percentage)
+- Multiple note types (general, internal, public)
+- Signatures (contractor and client)
+- VAT calculations and item management
 """
 
 from semantic_kernel.functions import kernel_function
@@ -17,8 +25,18 @@ from models.invoices import Invoice, InvoiceItem, InvoiceStatus, EInvoiceStatus,
 
 class InvoiceTools:
     """
-    Semantic Kernel tools for invoice generation and management
-    Provides AI-powered invoice creation from natural language prompts
+    Semantic Kernel tools for comprehensive invoice generation and management
+    
+    Provides AI-powered invoice creation from natural language prompts with support for:
+    - Complete client information (name, email, company type)
+    - Detailed project information (name, address, city, ZIP code)
+    - Multiple invoice types (final, interim, advance, credit)
+    - Flexible discount system (fixed amount or percentage)
+    - Down payment handling (fixed amount or percentage)
+    - Multiple note types (general, internal notes, public notes)
+    - Digital signatures (contractor and client)
+    - Comprehensive VAT calculations
+    - Item management with detailed descriptions and types
     """
     
     def __init__(self, settings: Settings):
@@ -29,15 +47,16 @@ class InvoiceTools:
         self.currency = settings.default_currency
     
     @kernel_function(
-        description="Create a new invoice from natural language description",
+        description="Create a new invoice from natural language description with support for all invoice fields",
         name="create_invoice"
     )
-    def create_invoice(self, description: str) -> str:
+    def create_invoice(self, description: str, user_id: str = None) -> str:
         """
-        Create a new invoice from text description
+        Create a new invoice from text description with comprehensive field extraction
         
         Args:
             description: Natural language description of the invoice
+            user_id: User ID for the invoice (optional, can be extracted from context)
             
         Returns:
             JSON string for frontend verification before API call
@@ -49,12 +68,43 @@ class InvoiceTools:
             # Extract client information
             client_data = self._extract_client_from_description(description)
             
+            # Extract project information
+            project_data = self._extract_project_from_description(description)
+            
+            # Extract invoice details
+            invoice_title = self._extract_title_from_description(description)
+            invoice_type = self._extract_invoice_type_from_description(description)
+            
+            # Extract discount information
+            discount_data = self._extract_discount_data_from_description(description)
+            
+            # Extract down payment information
+            down_payment_data = self._extract_down_payment_from_description(description)
+            
+            # Extract notes
+            notes_data = self._extract_notes_data_from_description(description)
+            
             # Calculate totals
             subtotal = sum(item["total"] for item in items)
-            discount = self._extract_discount_from_description(description)
+            discount = discount_data["amount"]
             vat_rate = self._extract_vat_rate_from_description(description) or self.default_vat_rate
-            vat_amount = (subtotal - discount) * (vat_rate / 100)
-            total = subtotal - discount + vat_amount
+            
+            # Apply discount based on type
+            if discount_data["type"] == "PERCENTAGE":
+                discount_amount = subtotal * (discount / 100)
+            else:
+                discount_amount = discount
+            
+            vat_amount = (subtotal - discount_amount) * (vat_rate / 100)
+            total_before_down_payment = subtotal - discount_amount + vat_amount
+            
+            # Apply down payment
+            if down_payment_data["type"] == "PERCENTAGE":
+                down_payment_amount = total_before_down_payment * (down_payment_data["amount"] / 100)
+            else:
+                down_payment_amount = down_payment_data["amount"]
+            
+            total = total_before_down_payment - down_payment_amount
             
             # Generate invoice number
             invoice_number = self._generate_invoice_number()
@@ -68,8 +118,19 @@ class InvoiceTools:
                 "endpoint": "/api/invoices/",
                 "method": "POST",
                 "data": {
-                    "clientId": client_data.get("id", str(uuid.uuid4())),
+                    "userId": user_id or str(uuid.uuid4()),
+                    "clientId": client_data.get("id"),
+                    "clientName": client_data.get("name"),
+                    "clientEmail": client_data.get("email"),
+                    "clientCompanyType": client_data.get("company_type", "COMPANY"),
                     "number": invoice_number,
+                    "title": invoice_title,
+                    "projectName": project_data.get("name"),
+                    "projectAddress": project_data.get("address"),
+                    "projectStreetAddress": project_data.get("street_address"),
+                    "projectZipCode": project_data.get("zip_code"),
+                    "projectCity": project_data.get("city"),
+                    "invoiceType": invoice_type,
                     "items": [
                         {
                             "id": item["id"],
@@ -80,16 +141,32 @@ class InvoiceTools:
                             "type": item["type"]
                         } for item in items
                     ],
-                    "discount": round(discount, 2),
+                    "discount": round(discount_data["amount"], 2),
+                    "discountType": discount_data["type"],
+                    "downPayment": round(down_payment_data["amount"], 2),
+                    "downPaymentType": down_payment_data["type"],
                     "vatRate": vat_rate,
                     "dueDate": due_date.isoformat() if due_date else (datetime.now() + timedelta(days=30)).isoformat(),
-                    "notes": self._extract_notes_from_description(description)
+                    "notes": notes_data.get("general"),
+                    "internalNotes": notes_data.get("internal"),
+                    "publicNotes": notes_data.get("public")
                 },
                 "preview": {
                     "invoice": {
                         "id": str(uuid.uuid4()),
-                        "clientId": client_data.get("id", str(uuid.uuid4())),
+                        "userId": user_id or str(uuid.uuid4()),
+                        "clientId": client_data.get("id"),
+                        "clientName": client_data.get("name"),
+                        "clientEmail": client_data.get("email"),
+                        "clientCompanyType": client_data.get("company_type", "COMPANY"),
                         "number": invoice_number,
+                        "title": invoice_title,
+                        "projectName": project_data.get("name"),
+                        "projectAddress": project_data.get("address"),
+                        "projectStreetAddress": project_data.get("street_address"),
+                        "projectZipCode": project_data.get("zip_code"),
+                        "projectCity": project_data.get("city"),
+                        "invoiceType": invoice_type,
                         "items": [
                             {
                                 "id": item["id"],
@@ -101,14 +178,19 @@ class InvoiceTools:
                             } for item in items
                         ],
                         "subtotal": round(subtotal, 2),
-                        "discount": round(discount, 2),
+                        "discount": round(discount_data["amount"], 2),
+                        "discountType": discount_data["type"],
+                        "downPayment": round(down_payment_data["amount"], 2),
+                        "downPaymentType": down_payment_data["type"],
                         "vatRate": vat_rate,
                         "vatAmount": round(vat_amount, 2),
                         "total": round(total, 2),
                         "status": "draft",
                         "dueDate": due_date.isoformat() if due_date else (datetime.now() + timedelta(days=30)).isoformat(),
                         "eInvoiceStatus": None,
-                        "notes": self._extract_notes_from_description(description),
+                        "notes": notes_data.get("general"),
+                        "internalNotes": notes_data.get("internal"),
+                        "publicNotes": notes_data.get("public"),
                         "createdAt": datetime.now().isoformat(),
                         "updatedAt": datetime.now().isoformat()
                     }
@@ -121,12 +203,12 @@ class InvoiceTools:
             return json.dumps({"error": f"Failed to create invoice: {str(e)}"})
     
     @kernel_function(
-        description="Update an existing invoice",
+        description="Update an existing invoice with support for all invoice fields",
         name="update_invoice"
     )
     def update_invoice(self, invoice_id: str, description: str) -> str:
         """
-        Update an existing invoice based on description
+        Update an existing invoice based on description with comprehensive field support
         
         Args:
             invoice_id: ID of the invoice to update
@@ -153,6 +235,38 @@ class InvoiceTools:
                     update_data["status"] = status
                     break
             
+            # Check for client information changes
+            client_data = self._extract_client_from_description(description)
+            if client_data.get("name"):
+                update_data["clientName"] = client_data["name"]
+            if client_data.get("email"):
+                update_data["clientEmail"] = client_data["email"]
+            if client_data.get("company_type"):
+                update_data["clientCompanyType"] = client_data["company_type"]
+            
+            # Check for title changes
+            title = self._extract_title_from_description(description)
+            if title:
+                update_data["title"] = title
+            
+            # Check for project information changes
+            project_data = self._extract_project_from_description(description)
+            if project_data.get("name"):
+                update_data["projectName"] = project_data["name"]
+            if project_data.get("address"):
+                update_data["projectAddress"] = project_data["address"]
+            if project_data.get("street_address"):
+                update_data["projectStreetAddress"] = project_data["street_address"]
+            if project_data.get("zip_code"):
+                update_data["projectZipCode"] = project_data["zip_code"]
+            if project_data.get("city"):
+                update_data["projectCity"] = project_data["city"]
+            
+            # Check for invoice type changes
+            invoice_type = self._extract_invoice_type_from_description(description)
+            if invoice_type:
+                update_data["invoiceType"] = invoice_type
+            
             # Check for new items
             items = self._extract_items_from_description(description)
             if items:
@@ -168,9 +282,16 @@ class InvoiceTools:
                 ]
             
             # Check for discount changes
-            discount = self._extract_discount_from_description(description)
-            if discount > 0:
-                update_data["discount"] = discount
+            discount_data = self._extract_discount_data_from_description(description)
+            if discount_data["amount"] > 0:
+                update_data["discount"] = discount_data["amount"]
+                update_data["discountType"] = discount_data["type"]
+            
+            # Check for down payment changes
+            down_payment_data = self._extract_down_payment_from_description(description)
+            if down_payment_data["amount"] > 0:
+                update_data["downPayment"] = down_payment_data["amount"]
+                update_data["downPaymentType"] = down_payment_data["type"]
             
             # Check for VAT rate changes
             vat_rate = self._extract_vat_rate_from_description(description)
@@ -182,10 +303,14 @@ class InvoiceTools:
             if due_date:
                 update_data["dueDate"] = due_date.isoformat()
             
-            # Check for notes
-            notes = self._extract_notes_from_description(description)
-            if notes:
-                update_data["notes"] = notes
+            # Check for notes changes
+            notes_data = self._extract_notes_data_from_description(description)
+            if notes_data.get("general"):
+                update_data["notes"] = notes_data["general"]
+            if notes_data.get("internal"):
+                update_data["internalNotes"] = notes_data["internal"]
+            if notes_data.get("public"):
+                update_data["publicNotes"] = notes_data["public"]
             
             # Check for invoice number changes
             number = self._extract_invoice_number_from_description(description)
@@ -350,11 +475,26 @@ class InvoiceTools:
                 # Convert to response format
                 invoice_response = {
                     "id": str(invoice_doc["_id"]),
+                    "userId": invoice_doc.get("userId", ""),
                     "clientId": invoice_doc.get("clientId", ""),
+                    "clientName": invoice_doc.get("clientName", ""),
+                    "clientEmail": invoice_doc.get("clientEmail", ""),
+                    "clientCompanyType": invoice_doc.get("clientCompanyType", "COMPANY"),
+                    "quoteId": invoice_doc.get("quoteId"),
                     "number": invoice_doc.get("number", ""),
+                    "title": invoice_doc.get("title", ""),
+                    "projectName": invoice_doc.get("projectName"),
+                    "projectAddress": invoice_doc.get("projectAddress"),
+                    "projectStreetAddress": invoice_doc.get("projectStreetAddress"),
+                    "projectZipCode": invoice_doc.get("projectZipCode"),
+                    "projectCity": invoice_doc.get("projectCity"),
+                    "invoiceType": invoice_doc.get("invoiceType", "FINAL"),
                     "items": invoice_doc.get("items", []),
                     "subtotal": invoice_doc.get("subtotal", 0.0),
                     "discount": invoice_doc.get("discount", 0.0),
+                    "discountType": invoice_doc.get("discountType", "FIXED"),
+                    "downPayment": invoice_doc.get("downPayment", 0.0),
+                    "downPaymentType": invoice_doc.get("downPaymentType", "PERCENTAGE"),
                     "vatRate": invoice_doc.get("vatRate", 20.0),
                     "vatAmount": invoice_doc.get("vatAmount", 0.0),
                     "total": invoice_doc.get("total", 0.0),
@@ -362,6 +502,10 @@ class InvoiceTools:
                     "dueDate": invoice_doc.get("dueDate", "").isoformat() if isinstance(invoice_doc.get("dueDate"), datetime) else invoice_doc.get("dueDate", ""),
                     "eInvoiceStatus": invoice_doc.get("eInvoiceStatus"),
                     "notes": invoice_doc.get("notes"),
+                    "internalNotes": invoice_doc.get("internalNotes"),
+                    "publicNotes": invoice_doc.get("publicNotes"),
+                    "contractorSignature": invoice_doc.get("contractorSignature"),
+                    "clientSignature": invoice_doc.get("clientSignature"),
                     "createdAt": invoice_doc.get("createdAt", "").isoformat() if isinstance(invoice_doc.get("createdAt"), datetime) else invoice_doc.get("createdAt", ""),
                     "updatedAt": invoice_doc.get("updatedAt", "").isoformat() if isinstance(invoice_doc.get("updatedAt"), datetime) else invoice_doc.get("updatedAt", "")
                 }
@@ -412,11 +556,26 @@ class InvoiceTools:
             # Convert to response format
             invoice_response = {
                 "id": str(invoice_doc["_id"]),
+                "userId": invoice_doc.get("userId", ""),
                 "clientId": invoice_doc.get("clientId", ""),
+                "clientName": invoice_doc.get("clientName", ""),
+                "clientEmail": invoice_doc.get("clientEmail", ""),
+                "clientCompanyType": invoice_doc.get("clientCompanyType", "COMPANY"),
+                "quoteId": invoice_doc.get("quoteId"),
                 "number": invoice_doc.get("number", ""),
+                "title": invoice_doc.get("title", ""),
+                "projectName": invoice_doc.get("projectName"),
+                "projectAddress": invoice_doc.get("projectAddress"),
+                "projectStreetAddress": invoice_doc.get("projectStreetAddress"),
+                "projectZipCode": invoice_doc.get("projectZipCode"),
+                "projectCity": invoice_doc.get("projectCity"),
+                "invoiceType": invoice_doc.get("invoiceType", "FINAL"),
                 "items": invoice_doc.get("items", []),
                 "subtotal": invoice_doc.get("subtotal", 0.0),
                 "discount": invoice_doc.get("discount", 0.0),
+                "discountType": invoice_doc.get("discountType", "FIXED"),
+                "downPayment": invoice_doc.get("downPayment", 0.0),
+                "downPaymentType": invoice_doc.get("downPaymentType", "PERCENTAGE"),
                 "vatRate": invoice_doc.get("vatRate", 20.0),
                 "vatAmount": invoice_doc.get("vatAmount", 0.0),
                 "total": invoice_doc.get("total", 0.0),
@@ -424,6 +583,10 @@ class InvoiceTools:
                 "dueDate": invoice_doc.get("dueDate", "").isoformat() if isinstance(invoice_doc.get("dueDate"), datetime) else invoice_doc.get("dueDate", ""),
                 "eInvoiceStatus": invoice_doc.get("eInvoiceStatus"),
                 "notes": invoice_doc.get("notes"),
+                "internalNotes": invoice_doc.get("internalNotes"),
+                "publicNotes": invoice_doc.get("publicNotes"),
+                "contractorSignature": invoice_doc.get("contractorSignature"),
+                "clientSignature": invoice_doc.get("clientSignature"),
                 "createdAt": invoice_doc.get("createdAt", "").isoformat() if isinstance(invoice_doc.get("createdAt"), datetime) else invoice_doc.get("createdAt", ""),
                 "updatedAt": invoice_doc.get("updatedAt", "").isoformat() if isinstance(invoice_doc.get("updatedAt"), datetime) else invoice_doc.get("updatedAt", "")
             }
@@ -638,6 +801,7 @@ class InvoiceTools:
             "phone": "",
             "address": "",
             "company": "",
+            "company_type": "COMPANY",
             "balance": 0.0,
             "status": "active",
             "notes": "",
@@ -691,6 +855,12 @@ class InvoiceTools:
             if company_match:
                 client_data["company"] = company_match.group(1).strip()
                 break
+        
+        # Extract company type
+        if any(word in description.lower() for word in ["individual", "person", "freelancer", "self-employed"]):
+            client_data["company_type"] = "INDIVIDUAL"
+        elif any(word in description.lower() for word in ["company", "corp", "business", "organization"]):
+            client_data["company_type"] = "COMPANY"
         
         return client_data
     
@@ -768,38 +938,241 @@ class InvoiceTools:
 
     def _extract_discount_from_description(self, description: str) -> float:
         """
-        Extract discount amount from description
+        Extract discount amount from description (legacy method for compatibility)
         """
-        # Pattern for discount amounts
-        discount_patterns = [
+        discount_data = self._extract_discount_data_from_description(description)
+        return discount_data["amount"]
+    
+    def _extract_discount_data_from_description(self, description: str) -> Dict[str, Any]:
+        """
+        Extract discount amount and type from description
+        """
+        discount_data = {
+            "amount": 0.0,
+            "type": "FIXED"
+        }
+        
+        # Pattern for percentage discounts
+        percentage_patterns = [
+            r'discount[:\s]*(\d+(?:\.\d+)?)%',
+            r'(\d+(?:\.\d+)?)%\s*(?:discount|off)'
+        ]
+        
+        for pattern in percentage_patterns:
+            match = re.search(pattern, description, re.IGNORECASE)
+            if match:
+                discount_data["amount"] = float(match.group(1))
+                discount_data["type"] = "PERCENTAGE"
+                return discount_data
+        
+        # Pattern for fixed discount amounts
+        fixed_patterns = [
             r'discount[:\s]*[€$£]?(\d+(?:\.\d+)?)',
             r'(?:less|minus)[:\s]*[€$£]?(\d+(?:\.\d+)?)',
             r'[€$£]?(\d+(?:\.\d+)?)\s*(?:discount|off)'
         ]
         
-        for pattern in discount_patterns:
+        for pattern in fixed_patterns:
             match = re.search(pattern, description, re.IGNORECASE)
             if match:
-                return float(match.group(1))
+                discount_data["amount"] = float(match.group(1))
+                discount_data["type"] = "FIXED"
+                return discount_data
         
-        return 0.0
+        return discount_data
     
-    def _extract_notes_from_description(self, description: str) -> str:
+    def _extract_title_from_description(self, description: str) -> str:
         """
-        Extract notes or additional information from description
+        Extract invoice title from description
         """
-        # Look for note indicators
-        note_patterns = [
+        # Pattern for invoice titles
+        title_patterns = [
+            r'(?:title|subject)[:\s]*([^,.;]+)',
+            r'(?:for|regarding)[:\s]*([^,.;]+)',
+            r'invoice[:\s]+for[:\s]*([^,.;]+)'
+        ]
+        
+        for pattern in title_patterns:
+            match = re.search(pattern, description, re.IGNORECASE)
+            if match:
+                return match.group(1).strip().title()
+        
+        return "Professional Services"
+    
+    def _extract_project_from_description(self, description: str) -> Dict[str, Any]:
+        """
+        Extract project information from description
+        """
+        project_data = {
+            "name": "",
+            "address": "",
+            "street_address": "",
+            "zip_code": "",
+            "city": ""
+        }
+        
+        # Extract project name
+        project_name_patterns = [
+            r'project[:\s]*([^,.;]+)',
+            r'job[:\s]*([^,.;]+)',
+            r'work[:\s]+on[:\s]*([^,.;]+)'
+        ]
+        
+        for pattern in project_name_patterns:
+            match = re.search(pattern, description, re.IGNORECASE)
+            if match:
+                project_data["name"] = match.group(1).strip().title()
+                break
+        
+        # Extract project address components
+        address_patterns = [
+            r'(?:project\s+)?(?:at|address|location)[:\s]*([^,.;]+)',
+            r'(\d+\s+[^,.;]+(?:street|st|avenue|ave|road|rd|drive|dr)[^,.;]*)'
+        ]
+        
+        for pattern in address_patterns:
+            address_match = re.search(pattern, description, re.IGNORECASE)
+            if address_match:
+                full_address = address_match.group(1).strip()
+                project_data["address"] = full_address
+                project_data["street_address"] = full_address
+                break
+        
+        # Extract ZIP code
+        zip_patterns = [
+            r'(\d{4,5}(?:\s*-\s*\d{4})?)',  # US/EU ZIP codes
+            r'(?:zip|postal)[:\s]*(\d{4,5})'
+        ]
+        
+        for pattern in zip_patterns:
+            zip_match = re.search(pattern, description)
+            if zip_match:
+                project_data["zip_code"] = zip_match.group(1).strip()
+                break
+        
+        # Extract city
+        city_patterns = [
+            r'(?:city|in)[:\s]*([A-Z][a-zA-Z\s]+)',
+            r',\s*([A-Z][a-zA-Z\s]+)(?:\s+\d{4,5})?$'  # City at end after comma
+        ]
+        
+        for pattern in city_patterns:
+            city_match = re.search(pattern, description)
+            if city_match:
+                project_data["city"] = city_match.group(1).strip().title()
+                break
+        
+        return project_data
+    
+    def _extract_invoice_type_from_description(self, description: str) -> str:
+        """
+        Extract invoice type from description
+        """
+        # Map keywords to invoice types
+        type_keywords = {
+            "FINAL": ["final", "completion", "balance", "remaining"],
+            "INTERIM": ["interim", "progress", "partial", "milestone"],
+            "ADVANCE": ["advance", "prepayment", "upfront", "deposit"],
+            "CREDIT": ["credit", "refund", "adjustment", "correction"]
+        }
+        
+        for invoice_type, keywords in type_keywords.items():
+            if any(keyword in description.lower() for keyword in keywords):
+                return invoice_type
+        
+        return "FINAL"  # Default type
+    
+    def _extract_down_payment_from_description(self, description: str) -> Dict[str, Any]:
+        """
+        Extract down payment information from description
+        """
+        down_payment_data = {
+            "amount": 0.0,
+            "type": "PERCENTAGE"
+        }
+        
+        # Pattern for percentage down payments
+        percentage_patterns = [
+            r'(?:down\s*payment|deposit)[:\s]*(\d+(?:\.\d+)?)%',
+            r'(\d+(?:\.\d+)?)%\s*(?:down|deposit|advance)'
+        ]
+        
+        for pattern in percentage_patterns:
+            match = re.search(pattern, description, re.IGNORECASE)
+            if match:
+                down_payment_data["amount"] = float(match.group(1))
+                down_payment_data["type"] = "PERCENTAGE"
+                return down_payment_data
+        
+        # Pattern for fixed down payment amounts
+        fixed_patterns = [
+            r'(?:down\s*payment|deposit)[:\s]*[€$£]?(\d+(?:\.\d+)?)',
+            r'[€$£]?(\d+(?:\.\d+)?)\s*(?:down|deposit|advance)'
+        ]
+        
+        for pattern in fixed_patterns:
+            match = re.search(pattern, description, re.IGNORECASE)
+            if match:
+                down_payment_data["amount"] = float(match.group(1))
+                down_payment_data["type"] = "FIXED"
+                return down_payment_data
+        
+        return down_payment_data
+    
+    def _extract_notes_data_from_description(self, description: str) -> Dict[str, str]:
+        """
+        Extract different types of notes from description
+        """
+        notes_data = {
+            "general": "",
+            "internal": "",
+            "public": ""
+        }
+        
+        # Extract general notes
+        general_patterns = [
             r'(?:note|notes|comment|comments)[:\s]*([^,.;]+)',
             r'(?:additional|extra|special)[:\s]*([^,.;]+)'
         ]
         
-        for pattern in note_patterns:
+        for pattern in general_patterns:
             match = re.search(pattern, description, re.IGNORECASE)
             if match:
-                return match.group(1).strip()
+                notes_data["general"] = match.group(1).strip()
+                break
         
-        return ""
+        # Extract internal notes
+        internal_patterns = [
+            r'internal\s*(?:note|notes)[:\s]*([^,.;]+)',
+            r'(?:private|confidential)[:\s]*([^,.;]+)'
+        ]
+        
+        for pattern in internal_patterns:
+            match = re.search(pattern, description, re.IGNORECASE)
+            if match:
+                notes_data["internal"] = match.group(1).strip()
+                break
+        
+        # Extract public notes
+        public_patterns = [
+            r'public\s*(?:note|notes)[:\s]*([^,.;]+)',
+            r'(?:client|customer)\s*(?:note|notes)[:\s]*([^,.;]+)'
+        ]
+        
+        for pattern in public_patterns:
+            match = re.search(pattern, description, re.IGNORECASE)
+            if match:
+                notes_data["public"] = match.group(1).strip()
+                break
+        
+        return notes_data
+    
+    def _extract_notes_from_description(self, description: str) -> str:
+        """
+        Extract notes or additional information from description (legacy method for compatibility)
+        """
+        notes_data = self._extract_notes_data_from_description(description)
+        return notes_data.get("general", "")
     
     def _generate_invoice_number(self) -> str:
         """

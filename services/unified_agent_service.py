@@ -81,7 +81,7 @@ class UnifiedAgentService:
                 "name", "email", "phone", "address"
             ],
             Intent.INVOICE: [
-                "customer_name", "customer_email", "items", "total_amount"
+                "customer_name", "customer_email", "items", "total_amount", "title"
             ],
             Intent.QUOTE: [
                 "customer_name", "customer_email", "services", "estimated_total"
@@ -113,6 +113,10 @@ class UnifiedAgentService:
         """
         try:
             self.logger.info(f"Processing unified request for user {user_id}: {prompt[:100]}...")
+            # Debug logging for user ID and database connection
+            from database import is_connected
+            self.logger.info(f"[DEBUG] User ID: {user_id} (type: {type(user_id)})")
+            self.logger.info(f"[DEBUG] Database connected: {is_connected()}")
             
             # Get or create conversation state
             conversation = self._get_conversation_state(user_id)
@@ -457,30 +461,118 @@ class UnifiedAgentService:
             }
         extraction_prompts = {
             Intent.INVOICE: """
-            Extract invoice data from this prompt. Return JSON with these fields:
-            - customer_name: Customer/client name
+            Extract comprehensive invoice data from this prompt. Return JSON with these fields:
+            
+            CLIENT INFORMATION:
+            - customer_name: Customer/client full name
             - customer_email: Email address
             - customer_phone: Phone number (optional)
-            - customer_address: Address (optional)
-            - items: Array of {description, quantity, unit_price, total}
-            - subtotal: Subtotal amount
-            - tax_rate: Tax rate (default 0.20)
-            - tax_amount: Tax amount
-            - total_amount: Final total
+            - customer_address: Full address (optional)
+            - customer_company_type: "COMPANY" or "INDIVIDUAL" (based on context)
+            
+            PROJECT DETAILS:
+            - title: Invoice title/subject
+            - project_name: Project or job name (optional)
+            - project_address: Complete project address (optional)
+            - project_street_address: Street address component (optional)
+            - project_zip_code: ZIP/postal code (optional)
+            - project_city: City name (optional)
+            
+            INVOICE DETAILS:
+            - invoice_type: "FINAL", "INTERIM", "ADVANCE", or "CREDIT" (based on context)
+            - items: Array of {description, quantity, unit_price, total, type}
+            - subtotal: Subtotal amount before discounts
+            
+            DISCOUNT INFORMATION:
+            - discount: Discount amount or percentage value
+            - discount_type: "FIXED" (euro amount) or "PERCENTAGE"
+            
+            DOWN PAYMENT INFORMATION:
+            - down_payment: Down payment amount or percentage value
+            - down_payment_type: "FIXED" (euro amount) or "PERCENTAGE"
+            
+            TAX AND TOTALS:
+            - vat_rate: VAT rate (default 0.20 = 20%)
+            - vat_amount: VAT amount
+            - total_amount: Final total after all calculations
+            
+            DATES:
             - invoice_date: Date (ISO format, default today)
             - due_date: Due date (ISO format, default +30 days)
+            
+            NOTES (categorize appropriately):
+            - notes: General notes about the invoice
+            - internal_notes: Internal notes (not visible to client)
+            - public_notes: Notes visible on PDF/to client
+            
+            SIGNATURES (if mentioned):
+            - contractor_signature: Contractor signature reference
+            - client_signature: Client signature reference
+            
+            Extract invoice type from context clues:
+            - FINAL: "final invoice", "completion", "balance", "remaining payment"
+            - INTERIM: "interim invoice", "progress payment", "milestone", "partial"
+            - ADVANCE: "advance payment", "upfront", "deposit invoice", "prepayment"
+            - CREDIT: "credit note", "refund", "adjustment", "correction"
+            
+            Determine discount type:
+            - PERCENTAGE: if "%" symbol present or percentage mentioned
+            - FIXED: if euro/currency amount specified
+            
+            Determine company type from context:
+            - INDIVIDUAL: "person", "individual", "freelancer", "self-employed"
+            - COMPANY: "company", "business", "corp", "ltd", "organization"
             """,
             Intent.QUOTE: """
-            Extract quote data from this prompt. Return JSON with these fields:
-            - customer_name: Customer/client name
+            Extract comprehensive quote data from this prompt. Return JSON with these fields:
+            
+            CLIENT INFORMATION:
+            - customer_name: Customer/client full name
             - customer_email: Email address
             - customer_phone: Phone number (optional)
-            - services: Array of {description, estimated_hours, hourly_rate, total}
-            - subtotal: Subtotal amount
-            - discount_percent: Discount percentage (optional)
-            - discount_amount: Discount amount (optional)
-            - estimated_total: Final estimated total
+            - customer_company_type: "COMPANY" or "INDIVIDUAL" (based on context)
+            
+            PROJECT DETAILS:
+            - title: Quote title/subject
+            - project_name: Project or job name (mandatory)
+            - project_street_address: Street address component (optional)
+            - project_zip_code: ZIP/postal code (optional)
+            - project_city: City name (optional)
+            
+            QUOTE DETAILS:
+            - services: Array of {description, estimated_hours, hourly_rate, total, type}
+            - subtotal: Subtotal amount before discounts
+            
+            DISCOUNT INFORMATION:
+            - discount: Discount amount or percentage value
+            - discount_type: "FIXED" (euro amount) or "PERCENTAGE"
+            
+            DOWN PAYMENT INFORMATION:
+            - down_payment: Down payment amount or percentage value
+            - down_payment_type: "FIXED" (euro amount) or "PERCENTAGE"
+            
+            TAX AND TOTALS:
+            - vat_rate: VAT rate (default 0.20 = 20%)
+            - estimated_total: Final estimated total after all calculations
+            
+            DATES:
             - valid_until: Quote validity date (ISO format, default +30 days)
+            
+            NOTES (categorize appropriately):
+            - internal_notes: Internal notes (not visible to client)
+            - public_notes: Notes visible on PDF/to client
+            
+            SIGNATURES (if mentioned):
+            - contractor_signature: Contractor signature reference
+            - client_signature: Client signature reference
+            
+            Extract discount type:
+            - PERCENTAGE: if "%" symbol present or percentage mentioned
+            - FIXED: if euro/currency amount specified
+            
+            Determine company type from context:
+            - INDIVIDUAL: "person", "individual", "freelancer", "self-employed"
+            - COMPANY: "company", "business", "corp", "ltd", "organization"
             """,
             Intent.CUSTOMER: """
             Extract customer data from this prompt. Return JSON with these fields:
