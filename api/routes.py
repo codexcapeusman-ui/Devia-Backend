@@ -19,8 +19,11 @@ import sys
 parent_dir = Path(__file__).parent.parent.parent
 sys.path.append(str(parent_dir))
 
+# Import the CORRECT text-based services (with our improvements)
 from services.semantic_kernel_service import SemanticKernelService
 from services.unified_agent_service import UnifiedAgentService
+
+# Import voice services (for voice endpoints only)
 from voice_services.unified_agent_service import UnifiedAgentService as VoiceUnifiedAgentService
 from voice_services.semantic_kernel_service import SemanticKernelService as VoiceSemanticKernelService
 from auth.dependencies import get_current_user_id_dependency
@@ -49,8 +52,9 @@ logger = logging.getLogger(__name__)
 # Create router
 agent_router = APIRouter(prefix="/agent", tags=["AI Agents"])
 
-# Global unified agent service
-unified_agent_service = None
+# Global services - separate instances for text and voice
+unified_agent_service = None  # Text-based service (with improvements)
+voice_unified_agent_service = None  # Voice-based service
 
 class UnifiedAgentRequest(BaseModel):
     """Unified request model for all AI agent interactions"""
@@ -80,19 +84,30 @@ def get_voice_sk_service(request: Request) -> VoiceSemanticKernelService:
         raise HTTPException(status_code=500, detail="Voice Semantic Kernel service not initialized")
     return voice_sk_service
 
-def get_unified_agent_service(voice_sk_service: VoiceSemanticKernelService = Depends(get_voice_sk_service)) -> VoiceUnifiedAgentService:
-    """Dependency to get Unified Agent service (shared instance for both text and voice)"""
+def get_text_sk_service(request: Request) -> SemanticKernelService:
+    """Dependency to get Text Semantic Kernel service from app state (the improved version)"""
+    sk_service = getattr(request.app.state, 'sk_service', None)
+    if not sk_service:
+        raise HTTPException(status_code=500, detail="Semantic Kernel service not initialized")
+    return sk_service
+
+def get_unified_agent_service(sk_service: SemanticKernelService = Depends(get_text_sk_service)) -> UnifiedAgentService:
+    """Dependency to get the TEXT-BASED Unified Agent service (with all improvements)"""
     global unified_agent_service
     
     if not unified_agent_service:
-        unified_agent_service = VoiceUnifiedAgentService(voice_sk_service)
+        unified_agent_service = UnifiedAgentService(sk_service)
     
     return unified_agent_service
 
 def get_voice_unified_agent_service(voice_sk_service: VoiceSemanticKernelService = Depends(get_voice_sk_service)) -> VoiceUnifiedAgentService:
-    """Dependency to get Voice Unified Agent service (same instance as text service for context preservation)"""
-    # Use the same instance as text service to preserve conversation context
-    return get_unified_agent_service(voice_sk_service)
+    """Dependency to get Voice Unified Agent service (for voice/audio endpoints only)"""
+    global voice_unified_agent_service
+    
+    if not voice_unified_agent_service:
+        voice_unified_agent_service = VoiceUnifiedAgentService(voice_sk_service)
+    
+    return voice_unified_agent_service
 
 @agent_router.post("/process", response_model=Dict[str, Any])
 async def process_agent_request(
