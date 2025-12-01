@@ -779,16 +779,79 @@ class UnifiedAgentService:
         """
         Intelligently merge new extracted data with existing conversation data.
         Only updates fields that have meaningful values in new_data.
-        Special handling for 'extracted_data' key - merge its contents to top level.
+        Flattens nested structures (like 'CLIENT INFORMATION', 'QUOTE DETAILS', etc.) to top level.
         """
-        for key, value in new_data.items():
-            if key == "extracted_data" and isinstance(value, dict):
-                # Merge extracted_data contents to top level
-                for sub_key, sub_value in value.items():
-                    if self._is_meaningful_value(sub_value):
-                        existing_data[sub_key] = sub_value
-            elif self._is_meaningful_value(value):
-                existing_data[key] = value
+        # Keys that indicate nested data sections that should be flattened
+        nested_section_keys = [
+            "extracted_data", "CLIENT INFORMATION", "PROJECT DETAILS", "QUOTE DETAILS",
+            "DISCOUNT INFORMATION", "DOWN PAYMENT INFORMATION", "TAX AND TOTALS",
+            "DATES", "NOTES", "INVOICE DETAILS", "EXPENSE DETAILS", "JOB DETAILS",
+            "TASK DETAILS", "CUSTOMER INFORMATION", "CLIENT_INFORMATION", "items"
+        ]
+        
+        def flatten_and_merge(data: Dict[str, Any], target: Dict[str, Any]) -> None:
+            """Recursively flatten nested dictionaries and merge to target"""
+            for key, value in data.items():
+                # Check if this is a nested section that should be flattened
+                if key.upper().replace(" ", "_") in [k.upper().replace(" ", "_") for k in nested_section_keys]:
+                    if isinstance(value, dict):
+                        # Recursively flatten nested sections
+                        flatten_and_merge(value, target)
+                    elif isinstance(value, list) and key.lower() in ["items", "services"]:
+                        # Keep items/services as arrays at top level
+                        if self._is_meaningful_value(value):
+                            target[key.lower()] = value
+                elif self._is_meaningful_value(value):
+                    # Normalize key to snake_case for consistency
+                    normalized_key = self._normalize_field_key(key)
+                    target[normalized_key] = value
+        
+        flatten_and_merge(new_data, existing_data)
+    
+    def _normalize_field_key(self, key: str) -> str:
+        """Normalize field keys to consistent snake_case format"""
+        # Map common variations to standard keys
+        key_mappings = {
+            "clientname": "customer_name",
+            "client_name": "customer_name",
+            "customername": "customer_name",
+            "clientemail": "customer_email",
+            "client_email": "customer_email",
+            "customeremail": "customer_email",
+            "clientcompanytype": "customer_company_type",
+            "client_company_type": "customer_company_type",
+            "customercompanytype": "customer_company_type",
+            "estimatedtotal": "estimated_total",
+            "estimated_total": "estimated_total",
+            "totalamount": "total_amount",
+            "total_amount": "total_amount",
+            "total": "total_amount",
+            "subtotal": "subtotal",
+            "vatrate": "vat_rate",
+            "vat_rate": "vat_rate",
+            "validuntil": "valid_until",
+            "valid_until": "valid_until",
+            "projectname": "project_name",
+            "project_name": "project_name",
+            "publicnotes": "public_notes",
+            "public_notes": "public_notes",
+            "internalnotes": "internal_notes",
+            "internal_notes": "internal_notes",
+            "discounttype": "discount_type",
+            "discount_type": "discount_type",
+            "downpayment": "down_payment",
+            "down_payment": "down_payment",
+            "downpaymenttype": "down_payment_type",
+            "down_payment_type": "down_payment_type",
+            "services": "services",
+            "items": "items",
+        }
+        
+        # Normalize to lowercase without spaces
+        normalized = key.lower().replace(" ", "_").replace("-", "_")
+        
+        # Return mapped key or original normalized key
+        return key_mappings.get(normalized, normalized)
     
     def _is_meaningful_value(self, value: Any) -> bool:
         """
@@ -815,6 +878,7 @@ class UnifiedAgentService:
         """
         Check which required fields are missing for the given intent
         For GET operations, only check for missing data if it's a specific ID query
+        Uses smart field matching to find data under various key names
         """
         # For GET operations, only check for missing data if it's a specific ID query
         if operation == Operation.GET:
@@ -827,8 +891,41 @@ class UnifiedAgentService:
         required = self.required_fields.get(intent, [])
         missing = []
         
+        # Field aliases - maps required field names to possible alternative keys
+        field_aliases = {
+            "customer_name": ["customer_name", "client_name", "clientName", "name", "clientname"],
+            "customer_email": ["customer_email", "client_email", "clientEmail", "email", "clientemail"],
+            "services": ["services", "items", "line_items", "lineItems", "service_items"],
+            "items": ["items", "services", "line_items", "lineItems", "invoice_items"],
+            "estimated_total": ["estimated_total", "estimatedTotal", "total", "total_amount", "totalAmount", "subtotal"],
+            "total_amount": ["total_amount", "totalAmount", "total", "estimated_total", "estimatedTotal", "subtotal"],
+            "title": ["title", "name", "project_name", "projectName", "description"],
+            "description": ["description", "title", "name"],
+            "amount": ["amount", "total", "total_amount", "totalAmount"],
+            "date": ["date", "expense_date", "expenseDate", "created_at", "createdAt"],
+            "category": ["category", "expense_category", "expenseCategory", "type"],
+            "name": ["name", "customer_name", "client_name", "clientName", "title"],
+            "email": ["email", "customer_email", "client_email", "clientEmail"],
+            "phone": ["phone", "phone_number", "phoneNumber", "telephone"],
+            "address": ["address", "full_address", "fullAddress", "street_address", "streetAddress"],
+            "start_time": ["start_time", "startTime", "start_date", "startDate", "scheduled_date"],
+            "end_time": ["end_time", "endTime", "end_date", "endDate"],
+            "scheduled_date": ["scheduled_date", "scheduledDate", "start_date", "startDate", "date"],
+            "duration": ["duration", "estimated_duration", "estimatedDuration", "hours"],
+        }
+        
         for field in required:
-            if field not in data or not data[field]:
+            # Get all possible aliases for this field
+            aliases = field_aliases.get(field, [field])
+            
+            # Check if any alias has a meaningful value
+            field_found = False
+            for alias in aliases:
+                if alias in data and self._is_meaningful_value(data[alias]):
+                    field_found = True
+                    break
+            
+            if not field_found:
                 missing.append(field)
         
         return missing
