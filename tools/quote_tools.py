@@ -131,11 +131,13 @@ class QuoteTools:
                     "items": [
                         {
                             "id": item["id"],
+                            "number": item["number"],
                             "description": item["description"],
                             "quantity": item["quantity"],
-                            "unitPrice": item["unit_price"],
+                            "unitPrice": item["unitPrice"],
                             "total": item["total"],
-                            "type": item["type"]
+                            "type": item["type"],
+                            "vatRate": item["vatRate"]
                         } for item in items
                     ],
                     "discount": round(discount_data["amount"], 2),
@@ -145,7 +147,9 @@ class QuoteTools:
                     "vatRate": vat_rate,
                     "validUntil": valid_until.isoformat() if valid_until else (datetime.now() + timedelta(days=30)).isoformat(),
                     "internalNotes": notes_data.get("internal"),
-                    "publicNotes": notes_data.get("public")
+                    "publicNotes": notes_data.get("public"),
+                    "contractorSignature": "",  # Add contractor signature field
+                    "clientSignature": ""  # Add client signature field
                 },
                 "preview": {
                     "quote": {
@@ -164,11 +168,13 @@ class QuoteTools:
                         "items": [
                             {
                                 "id": item["id"],
+                                "number": item["number"],
                                 "description": item["description"],
                                 "quantity": item["quantity"],
-                                "unitPrice": item["unit_price"],
+                                "unitPrice": item["unitPrice"],
                                 "total": item["total"],
-                                "type": item["type"]
+                                "type": item["type"],
+                                "vatRate": item["vatRate"]
                             } for item in items
                         ],
                         "subtotal": round(subtotal, 2),
@@ -183,6 +189,8 @@ class QuoteTools:
                         "validUntil": valid_until.isoformat() if valid_until else (datetime.now() + timedelta(days=30)).isoformat(),
                         "internalNotes": notes_data.get("internal"),
                         "publicNotes": notes_data.get("public"),
+                        "contractorSignature": "",  # Add contractor signature
+                        "clientSignature": "",  # Add client signature
                         "createdAt": datetime.now().isoformat(),
                         "updatedAt": datetime.now().isoformat()
                     }
@@ -258,11 +266,13 @@ class QuoteTools:
                 update_data["items"] = [
                     {
                         "id": item["id"],
+                        "number": item["number"],
                         "description": item["description"],
                         "quantity": item["quantity"],
-                        "unitPrice": item["unit_price"],
+                        "unitPrice": item["unitPrice"],
                         "total": item["total"],
-                        "type": item["type"]
+                        "type": item["type"],
+                        "vatRate": item["vatRate"]
                     } for item in items
                 ]
             
@@ -971,11 +981,13 @@ class QuoteTools:
                     
                     item = {
                         "id": str(item_id),
+                        "number": str(item_id),  # Add item number
                         "description": description_part.title(),
                         "quantity": quantity,
-                        "unit_price": unit_price,
+                        "unitPrice": unit_price,  # Use camelCase for consistency
                         "total": round(total, 2),
-                        "type": item_type
+                        "type": item_type,
+                        "vatRate": self.default_vat_rate  # Add VAT rate field
                     }
                     
                     items.append(item)
@@ -1446,11 +1458,13 @@ class QuoteTools:
                     
                     item = {
                         "id": str(item_id),
+                        "number": str(item_id),  # Add item number
                         "description": description_part.title(),
                         "quantity": quantity,
-                        "unit_price": round(unit_price, 2),
+                        "unitPrice": round(unit_price, 2),  # Use camelCase for consistency
                         "total": round(price, 2),
-                        "type": item_type
+                        "type": item_type,
+                        "vatRate": self.default_vat_rate  # Add VAT rate field
                     }
                     
                     items.append(item)

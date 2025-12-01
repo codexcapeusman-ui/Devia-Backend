@@ -134,11 +134,13 @@ class InvoiceTools:
                     "items": [
                         {
                             "id": item["id"],
+                            "number": item["number"],
                             "description": item["description"],
                             "quantity": item["quantity"],
-                            "unitPrice": item["unit_price"],
+                            "unitPrice": item["unitPrice"],
                             "total": item["total"],
-                            "type": item["type"]
+                            "type": item["type"],
+                            "vatRate": item["vatRate"]
                         } for item in items
                     ],
                     "discount": round(discount_data["amount"], 2),
@@ -147,9 +149,12 @@ class InvoiceTools:
                     "downPaymentType": down_payment_data["type"],
                     "vatRate": vat_rate,
                     "dueDate": due_date.isoformat() if due_date else (datetime.now() + timedelta(days=30)).isoformat(),
+                    "eInvoiceStatus": "pending",  # Add e-invoice status field
                     "notes": notes_data.get("general"),
                     "internalNotes": notes_data.get("internal"),
-                    "publicNotes": notes_data.get("public")
+                    "publicNotes": notes_data.get("public"),
+                    "contractorSignature": "",  # Add contractor signature field
+                    "clientSignature": ""  # Add client signature field
                 },
                 "preview": {
                     "invoice": {
@@ -170,11 +175,13 @@ class InvoiceTools:
                         "items": [
                             {
                                 "id": item["id"],
+                                "number": item["number"],
                                 "description": item["description"],
                                 "quantity": item["quantity"],
-                                "unitPrice": item["unit_price"],
+                                "unitPrice": item["unitPrice"],
                                 "total": item["total"],
-                                "type": item["type"]
+                                "type": item["type"],
+                                "vatRate": item["vatRate"]
                             } for item in items
                         ],
                         "subtotal": round(subtotal, 2),
@@ -191,6 +198,8 @@ class InvoiceTools:
                         "notes": notes_data.get("general"),
                         "internalNotes": notes_data.get("internal"),
                         "publicNotes": notes_data.get("public"),
+                        "contractorSignature": "",  # Add contractor signature
+                        "clientSignature": "",  # Add client signature
                         "createdAt": datetime.now().isoformat(),
                         "updatedAt": datetime.now().isoformat()
                     }
@@ -273,11 +282,13 @@ class InvoiceTools:
                 update_data["items"] = [
                     {
                         "id": item["id"],
+                        "number": item["number"],
                         "description": item["description"],
                         "quantity": item["quantity"],
-                        "unitPrice": item["unit_price"],
+                        "unitPrice": item["unitPrice"],
                         "total": item["total"],
-                        "type": item["type"]
+                        "type": item["type"],
+                        "vatRate": item["vatRate"]
                     } for item in items
                 ]
             
@@ -760,11 +771,13 @@ class InvoiceTools:
                     
                     item = {
                         "id": str(item_id),
+                        "number": str(item_id),  # Add item number
                         "description": description_part.title(),
                         "quantity": quantity,
-                        "unit_price": unit_price,
+                        "unitPrice": unit_price,
                         "total": round(total, 2),
-                        "type": item_type
+                        "type": item_type,
+                        "vatRate": self.default_vat_rate  # Add VAT rate field
                     }
                     
                     items.append(item)
