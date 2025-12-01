@@ -871,39 +871,68 @@ class UnifiedAgentService:
         # Intent-specific response formatting (dummy data for now)
         if intent == Intent.INVOICE:
             base_response["data"] = {
-                "invoice_id": "INV-2025-001",
-                "invoice_number": "INV-001",
-                "customer": {
-                    "name": data.get("customer_name", ""),
-                    "email": data.get("customer_email", ""),
-                    "phone": data.get("customer_phone", ""),
-                    "address": data.get("customer_address", "")
-                },
+                "userId": user_id,
+                "clientId": data.get("client_id") or data.get("clientId"),
+                "clientName": data.get("customer_name") or data.get("clientName", ""),
+                "clientEmail": data.get("customer_email") or data.get("clientEmail", ""),
+                "clientCompanyType": data.get("customer_company_type") or data.get("clientCompanyType", "company"),
+                "quoteId": data.get("quote_id") or data.get("quoteId", ""),
+                "number": data.get("invoice_number") or data.get("number", "INV-001"),
+                "title": data.get("title", ""),
+                "projectName": data.get("project_name") or data.get("projectName", ""),
+                "projectAddress": data.get("project_address") or data.get("projectAddress", ""),
+                "projectStreetAddress": data.get("project_street_address") or data.get("projectStreetAddress", ""),
+                "projectZipCode": data.get("project_zip_code") or data.get("projectZipCode", ""),
+                "projectCity": data.get("project_city") or data.get("projectCity", ""),
+                "invoiceType": data.get("invoice_type") or data.get("invoiceType", "final"),
                 "items": data.get("items", []),
+                "discount": data.get("discount", 0),
+                "discountType": data.get("discount_type") or data.get("discountType", "fixed"),
+                "downPayment": data.get("down_payment") or data.get("downPayment", 0),
+                "downPaymentType": data.get("down_payment_type") or data.get("downPaymentType", "percentage"),
+                "vatRate": data.get("vat_rate") or data.get("vatRate", 20),
+                "dueDate": data.get("due_date") or data.get("dueDate", datetime.now().isoformat()),
+                "eInvoiceStatus": data.get("e_invoice_status") or data.get("eInvoiceStatus", "pending"),
+                "notes": data.get("notes", ""),
+                "internalNotes": data.get("internal_notes") or data.get("internalNotes", ""),
+                "publicNotes": data.get("public_notes") or data.get("publicNotes", ""),
+                "contractorSignature": data.get("contractor_signature") or data.get("contractorSignature", ""),
+                "clientSignature": data.get("client_signature") or data.get("clientSignature", ""),
                 "subtotal": data.get("subtotal", 0),
                 "tax_amount": data.get("tax_amount", 0),
                 "total_amount": data.get("total_amount", 0),
                 "status": "draft",
-                "created_at": datetime.now().isoformat(),
-                "due_date": data.get("due_date", "")
+                "created_at": datetime.now().isoformat()
             }
         
         elif intent == Intent.QUOTE:
             base_response["data"] = {
-                "quote_id": "QUO-2025-001",
-                "quote_number": "QUO-001",
-                "customer": {
-                    "name": data.get("customer_name", ""),
-                    "email": data.get("customer_email", ""),
-                    "phone": data.get("customer_phone", "")
-                },
-                "services": data.get("services", []),
+                "userId": user_id,
+                "clientId": data.get("client_id") or data.get("clientId"),
+                "clientName": data.get("customer_name") or data.get("clientName", ""),
+                "clientEmail": data.get("customer_email") or data.get("clientEmail", ""),
+                "clientCompanyType": data.get("customer_company_type") or data.get("clientCompanyType", "company"),
+                "number": data.get("quote_number") or data.get("number", "QUO-001"),
+                "title": data.get("title", ""),
+                "projectName": data.get("project_name") or data.get("projectName", ""),
+                "projectStreetAddress": data.get("project_street_address") or data.get("projectStreetAddress", ""),
+                "projectZipCode": data.get("project_zip_code") or data.get("projectZipCode", ""),
+                "projectCity": data.get("project_city") or data.get("projectCity", ""),
+                "items": data.get("items", []),
+                "discount": data.get("discount", 0),
+                "discountType": data.get("discount_type") or data.get("discountType", "fixed"),
+                "downPayment": data.get("down_payment") or data.get("downPayment", 0),
+                "downPaymentType": data.get("down_payment_type") or data.get("downPaymentType", "percentage"),
+                "vatRate": data.get("vat_rate") or data.get("vatRate", 20),
+                "validUntil": data.get("valid_until") or data.get("validUntil") or (datetime.now() + datetime.timedelta(days=30)).isoformat(),
+                "internalNotes": data.get("internal_notes") or data.get("internalNotes", ""),
+                "publicNotes": data.get("public_notes") or data.get("publicNotes", ""),
+                "contractorSignature": data.get("contractor_signature") or data.get("contractorSignature", ""),
+                "clientSignature": data.get("client_signature") or data.get("clientSignature", ""),
                 "subtotal": data.get("subtotal", 0),
-                "discount_amount": data.get("discount_amount", 0),
                 "estimated_total": data.get("estimated_total", 0),
                 "status": "draft",
-                "created_at": datetime.now().isoformat(),
-                "valid_until": data.get("valid_until", "")
+                "created_at": datetime.now().isoformat()
             }
         
         elif intent == Intent.CUSTOMER:
