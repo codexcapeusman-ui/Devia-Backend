@@ -129,7 +129,7 @@ class SemanticKernelService:
             self.logger.error(f"OpenAI connection test failed: {e}")
             return False
     
-    async def process_invoice_request(self, prompt: str, context: Optional[Dict[str, Any]] = None, language: str = "en") -> Dict[str, Any]:
+    async def process_invoice_request(self, prompt: str, context: Optional[Dict[str, Any]] = None, language: str = "en", history: List[Dict] = None) -> Dict[str, Any]:
         """
         Process invoice generation request using AI agent
         
@@ -137,6 +137,7 @@ class SemanticKernelService:
             prompt: Natural language description of the invoice to generate
             context: Optional context data (client_id, quote_id, etc.)
             language: Response language (en/fr)
+            history: Previous conversation history
         
         Returns:
             Dictionary containing the generated invoice data or error information
@@ -151,7 +152,7 @@ class SemanticKernelService:
             full_prompt = self._prepare_prompt_with_context(prompt, context, "invoice", language)
             
             # Execute with Semantic Kernel
-            result = await self._execute_agent_request(system_prompt, full_prompt, "invoice")
+            result = await self._execute_agent_request(system_prompt, full_prompt, "invoice", history)
             
             return {
                 "success": True,
@@ -167,7 +168,7 @@ class SemanticKernelService:
                 "errors": [str(e)]
             }
     
-    async def process_customer_request(self, prompt: str, context: Optional[Dict[str, Any]] = None, language: str = "en") -> Dict[str, Any]:
+    async def process_customer_request(self, prompt: str, context: Optional[Dict[str, Any]] = None, language: str = "en", history: List[Dict] = None) -> Dict[str, Any]:
         """
         Process customer data extraction request using AI agent
         
@@ -175,6 +176,7 @@ class SemanticKernelService:
             prompt: Natural language text containing customer information
             context: Optional context data
             language: Response language (en/fr)
+            history: Previous conversation history
         
         Returns:
             Dictionary containing extracted customer data or error information
@@ -189,7 +191,7 @@ class SemanticKernelService:
             full_prompt = self._prepare_prompt_with_context(prompt, context, "customer", language)
             
             # Execute with Semantic Kernel
-            result = await self._execute_agent_request(system_prompt, full_prompt, "customer")
+            result = await self._execute_agent_request(system_prompt, full_prompt, "customer", history)
             
             return {
                 "success": True,
@@ -205,7 +207,7 @@ class SemanticKernelService:
                 "errors": [str(e)]
             }
     
-    async def process_quote_request(self, prompt: str, context: Optional[Dict[str, Any]] = None, language: str = "en") -> Dict[str, Any]:
+    async def process_quote_request(self, prompt: str, context: Optional[Dict[str, Any]] = None, language: str = "en", history: List[Dict] = None) -> Dict[str, Any]:
         """
         Process quote generation request using AI agent
         
@@ -213,6 +215,7 @@ class SemanticKernelService:
             prompt: Natural language description of the quote to generate
             context: Optional context data (client_id, etc.)
             language: Response language (en/fr)
+            history: Previous conversation history
         
         Returns:
             Dictionary containing the generated quote data or error information
@@ -227,7 +230,7 @@ class SemanticKernelService:
             full_prompt = self._prepare_prompt_with_context(prompt, context, "quote", language)
             
             # Execute with Semantic Kernel
-            result = await self._execute_agent_request(system_prompt, full_prompt, "quote")
+            result = await self._execute_agent_request(system_prompt, full_prompt, "quote", history)
             
             return {
                 "success": True,
@@ -243,7 +246,7 @@ class SemanticKernelService:
                 "errors": [str(e)]
             }
     
-    async def process_job_request(self, prompt: str, context: Optional[Dict[str, Any]] = None, language: str = "en") -> Dict[str, Any]:
+    async def process_job_request(self, prompt: str, context: Optional[Dict[str, Any]] = None, language: str = "en", history: List[Dict] = None) -> Dict[str, Any]:
         """
         Process job scheduling request using AI agent
         
@@ -251,6 +254,7 @@ class SemanticKernelService:
             prompt: Natural language description of the job to schedule
             context: Optional context data (client_id, etc.)
             language: Response language (en/fr)
+            history: Previous conversation history
         
         Returns:
             Dictionary containing the scheduled job data or error information
@@ -265,7 +269,7 @@ class SemanticKernelService:
             full_prompt = self._prepare_prompt_with_context(prompt, context, "job", language)
             
             # Execute with Semantic Kernel
-            result = await self._execute_agent_request(system_prompt, full_prompt, "job")
+            result = await self._execute_agent_request(system_prompt, full_prompt, "job", history)
             
             return {
                 "success": True,
@@ -281,7 +285,7 @@ class SemanticKernelService:
                 "errors": [str(e)]
             }
     
-    async def process_expense_request(self, prompt: str, context: Optional[Dict[str, Any]] = None, language: str = "en") -> Dict[str, Any]:
+    async def process_expense_request(self, prompt: str, context: Optional[Dict[str, Any]] = None, language: str = "en", history: List[Dict] = None) -> Dict[str, Any]:
         """
         Process expense tracking request using AI agent
         
@@ -289,6 +293,7 @@ class SemanticKernelService:
             prompt: Natural language description of the expense or receipt text
             context: Optional context data (receipt_text, etc.)
             language: Response language (en/fr)
+            history: Previous conversation history
         
         Returns:
             Dictionary containing the processed expense data or error information
@@ -303,7 +308,7 @@ class SemanticKernelService:
             full_prompt = self._prepare_prompt_with_context(prompt, context, "expense", language)
             
             # Execute with Semantic Kernel
-            result = await self._execute_agent_request(system_prompt, full_prompt, "expense")
+            result = await self._execute_agent_request(system_prompt, full_prompt, "expense", history)
             
             return {
                 "success": True,
@@ -319,7 +324,7 @@ class SemanticKernelService:
                 "errors": [str(e)]
             }
     
-    async def process_manual_task_request(self, prompt: str, context: Optional[Dict[str, Any]] = None, language: str = "en") -> Dict[str, Any]:
+    async def process_manual_task_request(self, prompt: str, context: Optional[Dict[str, Any]] = None, language: str = "en", history: List[Dict] = None) -> Dict[str, Any]:
         """
         Process manual task creation request using AI agent
         
@@ -327,6 +332,7 @@ class SemanticKernelService:
             prompt: Natural language description of the manual task
             context: Optional context data (task details, etc.)
             language: Response language (en/fr)
+            history: Previous conversation history
         
         Returns:
             Dictionary containing the processed manual task data or error information
@@ -341,7 +347,7 @@ class SemanticKernelService:
             full_prompt = self._prepare_prompt_with_context(prompt, context, "manual_task", language)
             
             # Execute with Semantic Kernel
-            result = await self._execute_agent_request(system_prompt, full_prompt, "manual_task")
+            result = await self._execute_agent_request(system_prompt, full_prompt, "manual_task", history)
             
             return {
                 "success": True,
@@ -357,7 +363,7 @@ class SemanticKernelService:
                 "errors": [str(e)]
             }
     
-    async def _execute_agent_request(self, system_prompt: str, user_prompt: str, agent_type: str) -> Dict[str, Any]:
+    async def _execute_agent_request(self, system_prompt: str, user_prompt: str, agent_type: str, chat_history_list: List[Dict] = None) -> Dict[str, Any]:
         """
         Execute an agent request using Semantic Kernel
         
@@ -365,6 +371,7 @@ class SemanticKernelService:
             system_prompt: System instructions for the AI
             user_prompt: User's request with context
             agent_type: Type of agent (invoice, customer, quote, job, expense)
+            chat_history_list: Previous conversation history as list of {"role": "user/assistant", "content": "..."}
         
         Returns:
             Parsed result from the AI agent
@@ -375,6 +382,15 @@ class SemanticKernelService:
         # Create chat history
         chat_history = ChatHistory()
         chat_history.add_system_message(system_prompt)
+        
+        # Add previous conversation history if provided
+        if chat_history_list:
+            for msg in chat_history_list:
+                if msg["role"] == "user":
+                    chat_history.add_user_message(msg["content"])
+                elif msg["role"] == "assistant":
+                    chat_history.add_assistant_message(msg["content"])
+        
         chat_history.add_user_message(user_prompt)
         
         # Configure execution settings

@@ -129,7 +129,7 @@ class SemanticKernelService:
             self.logger.error(f"OpenAI connection test failed: {e}")
             return False
     
-    async def process_invoice_request(self, prompt: str, context: Optional[Dict[str, Any]] = None, language: str = "en") -> Dict[str, Any]:
+    async def process_invoice_request(self, prompt: str, context: Optional[Dict[str, Any]] = None, language: str = "en", history: list = None) -> Dict[str, Any]:
         """
         Process invoice generation request using AI agent
         
@@ -137,6 +137,7 @@ class SemanticKernelService:
             prompt: Natural language description of the invoice to generate
             context: Optional context data (client_id, quote_id, etc.)
             language: Response language (en/fr)
+            history: Optional conversation history for multi-turn context
         
         Returns:
             Dictionary containing the generated invoice data or error information
@@ -151,12 +152,12 @@ class SemanticKernelService:
             full_prompt = self._prepare_prompt_with_context(prompt, context, "invoice", language)
             
             # Execute with Semantic Kernel
-            result = await self._execute_agent_request(system_prompt, full_prompt, "invoice")
+            result = await self._execute_agent_request(system_prompt, full_prompt, "invoice", history)
             
             return {
                 "success": True,
                 "message": "Invoice generated successfully" if language == "en" else "Facture générée avec succès",
-                "data": result
+                "data": result.get("data") if isinstance(result, dict) else result
             }
             
         except Exception as e:
@@ -167,7 +168,7 @@ class SemanticKernelService:
                 "errors": [str(e)]
             }
     
-    async def process_customer_request(self, prompt: str, context: Optional[Dict[str, Any]] = None, language: str = "en") -> Dict[str, Any]:
+    async def process_customer_request(self, prompt: str, context: Optional[Dict[str, Any]] = None, language: str = "en", history: list = None) -> Dict[str, Any]:
         """
         Process customer data extraction request using AI agent
         
@@ -175,6 +176,7 @@ class SemanticKernelService:
             prompt: Natural language text containing customer information
             context: Optional context data
             language: Response language (en/fr)
+            history: Optional conversation history for multi-turn context
         
         Returns:
             Dictionary containing extracted customer data or error information
@@ -189,12 +191,12 @@ class SemanticKernelService:
             full_prompt = self._prepare_prompt_with_context(prompt, context, "customer", language)
             
             # Execute with Semantic Kernel
-            result = await self._execute_agent_request(system_prompt, full_prompt, "customer")
+            result = await self._execute_agent_request(system_prompt, full_prompt, "customer", history)
             
             return {
                 "success": True,
                 "message": "Customer data extracted successfully" if language == "en" else "Données client extraites avec succès",
-                "data": result
+                "data": result.get("data") if isinstance(result, dict) else result
             }
             
         except Exception as e:
@@ -205,7 +207,7 @@ class SemanticKernelService:
                 "errors": [str(e)]
             }
     
-    async def process_quote_request(self, prompt: str, context: Optional[Dict[str, Any]] = None, language: str = "en") -> Dict[str, Any]:
+    async def process_quote_request(self, prompt: str, context: Optional[Dict[str, Any]] = None, language: str = "en", history: list = None) -> Dict[str, Any]:
         """
         Process quote generation request using AI agent
         
@@ -213,6 +215,7 @@ class SemanticKernelService:
             prompt: Natural language description of the quote to generate
             context: Optional context data (client_id, etc.)
             language: Response language (en/fr)
+            history: Optional conversation history for multi-turn context
         
         Returns:
             Dictionary containing the generated quote data or error information
@@ -227,12 +230,12 @@ class SemanticKernelService:
             full_prompt = self._prepare_prompt_with_context(prompt, context, "quote", language)
             
             # Execute with Semantic Kernel
-            result = await self._execute_agent_request(system_prompt, full_prompt, "quote")
+            result = await self._execute_agent_request(system_prompt, full_prompt, "quote", history)
             
             return {
                 "success": True,
                 "message": "Quote generated successfully" if language == "en" else "Devis généré avec succès",
-                "data": result
+                "data": result.get("data") if isinstance(result, dict) else result
             }
             
         except Exception as e:
@@ -243,7 +246,7 @@ class SemanticKernelService:
                 "errors": [str(e)]
             }
     
-    async def process_job_request(self, prompt: str, context: Optional[Dict[str, Any]] = None, language: str = "en") -> Dict[str, Any]:
+    async def process_job_request(self, prompt: str, context: Optional[Dict[str, Any]] = None, language: str = "en", history: list = None) -> Dict[str, Any]:
         """
         Process job scheduling request using AI agent
         
@@ -251,6 +254,7 @@ class SemanticKernelService:
             prompt: Natural language description of the job to schedule
             context: Optional context data (client_id, etc.)
             language: Response language (en/fr)
+            history: Optional conversation history for multi-turn context
         
         Returns:
             Dictionary containing the scheduled job data or error information
@@ -265,12 +269,12 @@ class SemanticKernelService:
             full_prompt = self._prepare_prompt_with_context(prompt, context, "job", language)
             
             # Execute with Semantic Kernel
-            result = await self._execute_agent_request(system_prompt, full_prompt, "job")
+            result = await self._execute_agent_request(system_prompt, full_prompt, "job", history)
             
             return {
                 "success": True,
                 "message": "Job scheduled successfully" if language == "en" else "Travail programmé avec succès",
-                "data": result
+                "data": result.get("data") if isinstance(result, dict) else result
             }
             
         except Exception as e:
@@ -281,7 +285,7 @@ class SemanticKernelService:
                 "errors": [str(e)]
             }
     
-    async def process_expense_request(self, prompt: str, context: Optional[Dict[str, Any]] = None, language: str = "en") -> Dict[str, Any]:
+    async def process_expense_request(self, prompt: str, context: Optional[Dict[str, Any]] = None, language: str = "en", history: list = None) -> Dict[str, Any]:
         """
         Process expense tracking request using AI agent
         
@@ -289,6 +293,7 @@ class SemanticKernelService:
             prompt: Natural language description of the expense or receipt text
             context: Optional context data (receipt_text, etc.)
             language: Response language (en/fr)
+            history: Optional conversation history for multi-turn context
         
         Returns:
             Dictionary containing the processed expense data or error information
@@ -303,12 +308,12 @@ class SemanticKernelService:
             full_prompt = self._prepare_prompt_with_context(prompt, context, "expense", language)
             
             # Execute with Semantic Kernel
-            result = await self._execute_agent_request(system_prompt, full_prompt, "expense")
+            result = await self._execute_agent_request(system_prompt, full_prompt, "expense", history)
             
             return {
                 "success": True,
                 "message": "Expense tracked successfully" if language == "en" else "Dépense enregistrée avec succès",
-                "data": result
+                "data": result.get("data") if isinstance(result, dict) else result
             }
             
         except Exception as e:
@@ -319,7 +324,7 @@ class SemanticKernelService:
                 "errors": [str(e)]
             }
 
-    async def process_manual_task_request(self, prompt: str, context: Optional[Dict[str, Any]] = None, language: str = "en") -> Dict[str, Any]:
+    async def process_manual_task_request(self, prompt: str, context: Optional[Dict[str, Any]] = None, language: str = "en", history: list = None) -> Dict[str, Any]:
         """
         Process manual task creation request using AI agent
         
@@ -327,6 +332,7 @@ class SemanticKernelService:
             prompt: Natural language description of the manual task
             context: Optional context data
             language: Response language (en/fr)
+            history: Optional conversation history for multi-turn context
         
         Returns:
             Dictionary containing the processed manual task data or error information
@@ -341,12 +347,12 @@ class SemanticKernelService:
             full_prompt = self._prepare_prompt_with_context(prompt, context, "manual_task", language)
             
             # Execute with Semantic Kernel
-            result = await self._execute_agent_request(system_prompt, full_prompt, "manual_task")
+            result = await self._execute_agent_request(system_prompt, full_prompt, "manual_task", history)
             
             return {
                 "success": True,
                 "message": "Manual task created successfully" if language == "en" else "Tâche manuelle créée avec succès",
-                "data": result
+                "data": result.get("data") if isinstance(result, dict) else result
             }
             
         except Exception as e:
@@ -357,7 +363,97 @@ class SemanticKernelService:
                 "errors": [str(e)]
             }
     
-    async def _execute_agent_request(self, system_prompt: str, user_prompt: str, agent_type: str) -> Dict[str, Any]:
+    def _clean_and_parse_json(self, response_text: str) -> Dict[str, Any]:
+        """
+        Robustly extract and parse JSON from LLM responses.
+        Handles cases where LLM adds conversational text before/after JSON.
+        
+        Args:
+            response_text: Raw response text from LLM
+            
+        Returns:
+            Parsed JSON dictionary or error dictionary
+        """
+        import re
+        
+        if not response_text or not response_text.strip():
+            return {"error": "Empty response from AI", "raw_response": response_text}
+        
+        # Try 1: Direct JSON parse (best case scenario)
+        try:
+            return json.loads(response_text.strip())
+        except json.JSONDecodeError:
+            pass
+        
+        # Try 2: Extract JSON from markdown code blocks (```json ... ``` or ``` ... ```)
+        code_block_patterns = [
+            r"```json\s*([\s\S]*?)\s*```",  # ```json ... ```
+            r"```\s*([\s\S]*?)\s*```",       # ``` ... ```
+        ]
+        
+        for pattern in code_block_patterns:
+            match = re.search(pattern, response_text, re.DOTALL | re.IGNORECASE)
+            if match:
+                json_str = match.group(1).strip()
+                try:
+                    return json.loads(json_str)
+                except json.JSONDecodeError:
+                    continue
+        
+        # Try 3: Find JSON object by locating first '{' and last '}'
+        start_idx = response_text.find("{")
+        end_idx = response_text.rfind("}")
+        
+        if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+            json_str = response_text[start_idx:end_idx + 1]
+            try:
+                return json.loads(json_str)
+            except json.JSONDecodeError:
+                pass
+        
+        # Try 4: Find JSON array by locating first '[' and last ']'
+        start_idx = response_text.find("[")
+        end_idx = response_text.rfind("]")
+        
+        if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+            json_str = response_text[start_idx:end_idx + 1]
+            try:
+                parsed = json.loads(json_str)
+                return {"items": parsed} if isinstance(parsed, list) else parsed
+            except json.JSONDecodeError:
+                pass
+        
+        # Try 5: Handle common LLM response patterns
+        # Remove common prefixes like "Sure!", "Here is the data:", etc.
+        cleaned = response_text.strip()
+        prefix_patterns = [
+            r"^(?:Sure!?|Here(?:'s| is| are).*?:|Certainly!?|Of course!?|I(?:'ll| will).*?:)\s*",
+            r"^(?:The|Based on|According to).*?:\s*",
+        ]
+        
+        for prefix_pattern in prefix_patterns:
+            cleaned = re.sub(prefix_pattern, "", cleaned, flags=re.IGNORECASE)
+        
+        # Try parsing the cleaned text
+        start_idx = cleaned.find("{")
+        end_idx = cleaned.rfind("}")
+        
+        if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+            json_str = cleaned[start_idx:end_idx + 1]
+            try:
+                return json.loads(json_str)
+            except json.JSONDecodeError:
+                pass
+        
+        # Final fallback: Return the raw response with error indication
+        self.logger.warning(f"Failed to parse JSON from LLM response: {response_text[:200]}...")
+        return {
+            "error": "Could not parse JSON from AI response",
+            "raw_response": response_text,
+            "response": response_text  # Keep response for backward compatibility
+        }
+
+    async def _execute_agent_request(self, system_prompt: str, user_prompt: str, agent_type: str, history: list = None) -> Dict[str, Any]:
         """
         Execute an agent request using Semantic Kernel
         
@@ -365,6 +461,7 @@ class SemanticKernelService:
             system_prompt: System instructions for the AI
             user_prompt: User's request with context
             agent_type: Type of agent (invoice, customer, quote, job, expense)
+            history: Optional conversation history for context
         
         Returns:
             Parsed result from the AI agent
@@ -375,6 +472,15 @@ class SemanticKernelService:
         # Create chat history
         chat_history = ChatHistory()
         chat_history.add_system_message(system_prompt)
+        
+        # Add conversation history if provided (for multi-turn context)
+        if history:
+            for msg in history:
+                if msg.get("role") == "user":
+                    chat_history.add_user_message(msg.get("content", ""))
+                elif msg.get("role") == "assistant":
+                    chat_history.add_assistant_message(msg.get("content", ""))
+        
         chat_history.add_user_message(user_prompt)
         
         # Configure execution settings
@@ -392,16 +498,11 @@ class SemanticKernelService:
             settings=execution_settings
         )
         
-        # Parse the result
+        # Parse the result using robust JSON parser
         response_text = str(result)
+        parsed_result = self._clean_and_parse_json(response_text)
         
-        try:
-            # Try to parse as JSON first
-            parsed_result = json.loads(response_text)
-            return parsed_result
-        except json.JSONDecodeError:
-            # If not JSON, return as text
-            return {"response": response_text}
+        return {"success": True, "data": parsed_result}
     
     def _prepare_prompt_with_context(self, prompt: str, context: Optional[Dict[str, Any]], agent_type: str, language: str) -> str:
         """Prepare the full prompt with context information"""
@@ -446,67 +547,143 @@ FONCTIONS DISPONIBLES:
 - invoice.get_invoice_by_id: Récupérer une facture par ID
 - customer.extract_customer_data: Extraire les données client depuis le texte
 
-NOUVEAUX CHAMPS COMPLETS DE FACTURE SUPPORTÉS:
+CHAMPS DE FACTURE SUPPORTÉS:
 - Informations Client: clientName, clientEmail, clientCompanyType (COMPANY/INDIVIDUAL)
 - Détails Projet: title, projectName, projectAddress, projectStreetAddress, projectZipCode, projectCity
 - Types de Facture: invoiceType (FINAL/INTERIM/ADVANCE/CREDIT)
-- Système de Remise: montant remise, discountType (FIXED/PERCENTAGE)
-- Système d'Acompte: montant acompte, downPaymentType (FIXED/PERCENTAGE)
-- Notes Multiples: notes (générales), internalNotes (privées), publicNotes (visibles client)
-- Signatures Numériques: contractorSignature, clientSignature (encodées base64)
-- Champs Améliorés: quoteId (pour conversion devis), userId
+- Système de Remise: discount (montant), discountType (FIXED/PERCENTAGE)
+- Système d'Acompte: downPayment (montant), downPaymentType (FIXED/PERCENTAGE)
+- Notes: notes (générales), internalNotes (privées), publicNotes (visibles client)
+- Éléments: items (array avec description, quantity, unitPrice, total, type)
+
+NORMALISATION DES DONNÉES (CRITIQUE):
+Tu DOIS convertir les données en langage naturel vers des valeurs structurées:
+- "dix heures" → 10 (nombre)
+- "cinquante euros" → 50.0 (nombre)
+- "demain" → date ISO (ex: 2025-12-02)
+- "la semaine prochaine" → date ISO calculée
+- "vingt pourcent" → 20 (pourcentage)
+- "mardi prochain" → date ISO calculée
+
+EXEMPLES (FEW-SHOT):
+
+Utilisateur: "Créer une facture pour Jean Dupont, dix heures de développement web à cinquante euros l'heure"
+Assistant: {
+    "clientName": "Jean Dupont",
+    "clientCompanyType": "INDIVIDUAL",
+    "items": [{"description": "Développement Web", "quantity": 10, "unitPrice": 50.0, "total": 500.0, "type": "labor"}],
+    "subtotal": 500.0,
+    "vatRate": 20,
+    "vatAmount": 100.0,
+    "total": 600.0,
+    "status": "complete"
+}
+
+Utilisateur: "Facture de 500 euros"
+Assistant: {
+    "missing_fields": ["clientName", "items"],
+    "response": "Pour créer cette facture de 500€, j'ai besoin du nom du client et du détail des services fournis.",
+    "status": "incomplete"
+}
+
+Utilisateur: "Ajouter client Marie Martin"
+Assistant: {
+    "missing_fields": ["clientEmail"],
+    "response": "Je peux ajouter Marie Martin. Avez-vous son adresse email ?",
+    "status": "incomplete"
+}
 
 INSTRUCTIONS:
-1. Analyser la demande pour identifier toutes les informations de facturation et projet.
-2. Extraire les données client complètes incluant le type d'entreprise (individuel vs société).
-3. Identifier les détails projet (nom, composants d'adresse complète incluant code postal et ville).
-4. Déterminer le type de facture depuis le contexte (finale, acompte, avance, avoir).
-5. Analyser les informations de remise incluant le type (pourcentage vs montant fixe).
-6. Extraire les détails d'acompte si mentionnés (pourcentage ou montant fixe).
-7. Catégoriser les notes en internes (privées), publiques (visibles client), ou générales.
-8. Calculer les totaux en considérant remises, acomptes, et TVA.
-9. Lors d'appels get_*, TOUJOURS inclure le paramètre user_id depuis le contexte.
-10. Retourner les données structurées en JSON, prêtes pour l'API complète.
+1. Analyser la demande pour identifier toutes les informations.
+2. CONVERTIR les mots en nombres (dix→10, cinquante→50, etc.)
+3. CONVERTIR les dates relatives en dates absolues ISO.
+4. Si des informations ESSENTIELLES manquent, retourner status="incomplete" avec les champs manquants.
+5. Retourner TOUJOURS du JSON valide, jamais de texte conversationnel seul.
 
-TOUJOURS retourner un JSON valide avec la structure de facture améliorée supportant tous les nouveaux champs."""
+TOUJOURS retourner un JSON valide."""
         else:
             return """You are an AI assistant specialized in comprehensive invoice generation for Devia.
 
 ROLE: Analyze natural language requests and generate structured invoice data with full field support.
 
 AVAILABLE FUNCTIONS:
-- invoice.create_invoice: Create an invoice from natural language description with comprehensive field extraction
-- invoice.update_invoice: Update an existing invoice with all field support
+- invoice.create_invoice: Create an invoice from natural language description
+- invoice.update_invoice: Update an existing invoice
 - invoice.delete_invoice: Delete an invoice
 - invoice.calculate_invoice_totals: Calculate totals (VAT, discounts, down payments)
-- invoice.generate_invoice_number: Generate unique invoice number
 - invoice.get_invoices: List invoices
 - invoice.get_invoice_by_id: Get invoice by ID
-- customer.extract_customer_data: Extract customer data from text
 
-NEW COMPREHENSIVE INVOICE FIELDS SUPPORTED:
+SUPPORTED INVOICE FIELDS:
 - Client Information: clientName, clientEmail, clientCompanyType (COMPANY/INDIVIDUAL)
 - Project Details: title, projectName, projectAddress, projectStreetAddress, projectZipCode, projectCity
 - Invoice Types: invoiceType (FINAL/INTERIM/ADVANCE/CREDIT)
-- Discount System: discount amount, discountType (FIXED/PERCENTAGE)
-- Down Payment System: downPayment amount, downPaymentType (FIXED/PERCENTAGE)
-- Multiple Notes: notes (general), internalNotes (private), publicNotes (client-visible)
-- Digital Signatures: contractorSignature, clientSignature (base64 encoded)
-- Enhanced Fields: quoteId (for quote conversion), userId
+- Discount System: discount (amount), discountType (FIXED/PERCENTAGE)
+- Down Payment System: downPayment (amount), downPaymentType (FIXED/PERCENTAGE)
+- Notes: notes (general), internalNotes (private), publicNotes (client-visible)
+- Items: items (array with description, quantity, unitPrice, total, type)
+
+DATA NORMALIZATION (CRITICAL):
+You MUST convert natural language data to structured values:
+- "ten hours" → 10 (number)
+- "fifty dollars" → 50.0 (number)
+- "tomorrow" → ISO date (e.g., 2025-12-02)
+- "next week" → calculated ISO date
+- "twenty percent" → 20 (percentage)
+- "next Tuesday" → calculated ISO date
+- "a hundred" → 100 (number)
+- "half a day" → 4 (hours)
+
+FEW-SHOT EXAMPLES:
+
+User: "Create an invoice for John Smith, ten hours of web development at fifty dollars per hour"
+Assistant: {
+    "clientName": "John Smith",
+    "clientCompanyType": "INDIVIDUAL",
+    "items": [{"description": "Web Development", "quantity": 10, "unitPrice": 50.0, "total": 500.0, "type": "labor"}],
+    "subtotal": 500.0,
+    "vatRate": 20,
+    "vatAmount": 100.0,
+    "total": 600.0,
+    "status": "complete"
+}
+
+User: "Invoice for 500 dollars"
+Assistant: {
+    "missing_fields": ["clientName", "items"],
+    "response": "To create this $500 invoice, I need the customer name and a breakdown of services provided.",
+    "status": "incomplete"
+}
+
+User: "Add client John"
+Assistant: {
+    "missing_fields": ["clientEmail", "clientPhone"],
+    "response": "I can add John. Do you have an email address or phone number for him?",
+    "status": "incomplete"
+}
+
+User: "Bill ABC Corp twenty hours consulting at a hundred fifty per hour with ten percent discount"
+Assistant: {
+    "clientName": "ABC Corp",
+    "clientCompanyType": "COMPANY",
+    "items": [{"description": "Consulting", "quantity": 20, "unitPrice": 150.0, "total": 3000.0, "type": "service"}],
+    "subtotal": 3000.0,
+    "discount": 10,
+    "discountType": "PERCENTAGE",
+    "vatRate": 20,
+    "vatAmount": 540.0,
+    "total": 3240.0,
+    "status": "complete"
+}
 
 INSTRUCTIONS:
-1. Analyze the request to identify all billing and project information.
-2. Extract comprehensive client data including company type (individual vs company).
-3. Identify project details (name, full address components including ZIP and city).
-4. Determine invoice type from context (final, interim, advance payment, credit).
-5. Parse discount information including type (percentage vs fixed amount).
-6. Extract down payment details if mentioned (percentage or fixed amount).
-7. Categorize notes into internal (private), public (client-visible), or general.
-8. Calculate totals considering discounts, down payments, and VAT.
-9. When calling get_* functions, ALWAYS include the user_id parameter from context.
-10. Return structured data as JSON, ready for the comprehensive API.
+1. Analyze the request to identify all information.
+2. CONVERT words to numbers (ten→10, fifty→50, hundred→100, etc.)
+3. CONVERT relative dates to absolute ISO dates.
+4. If ESSENTIAL information is missing, return status="incomplete" with missing_fields.
+5. ALWAYS return valid JSON, never conversational text alone.
 
-ALWAYS return valid JSON with the enhanced invoice structure supporting all new fields."""
+ALWAYS return valid JSON."""
     
     def _get_customer_system_prompt(self, language: str) -> str:
         """Get system prompt for customer data extraction agent"""
@@ -520,15 +697,51 @@ FONCTIONS DISPONIBLES:
 - customer.validate_customer_info: Valider les informations client
 - customer.format_address: Formater l'adresse
 - customer.generate_customer_id: Générer un ID client unique
-- customer.extract_customer_preferences: Extraire préférences et notes du client
+
+CHAMPS CLIENT:
+- name: Nom complet du client
+- email: Adresse email
+- phone: Numéro de téléphone
+- address: Adresse complète
+- company: Nom de l'entreprise (si applicable)
+- notes: Notes additionnelles
+
+NORMALISATION DES DONNÉES (CRITIQUE):
+- Formater les numéros de téléphone correctement
+- Valider le format des emails
+- Normaliser les adresses
+
+EXEMPLES (FEW-SHOT):
+
+Utilisateur: "Ajouter client Jean Dupont"
+Assistant: {
+    "missing_fields": ["email", "phone"],
+    "response": "Je peux ajouter Jean Dupont. Avez-vous son email ou numéro de téléphone ?",
+    "status": "incomplete"
+}
+
+Utilisateur: "Nouveau client Marie Martin, email marie@email.com, téléphone 0612345678"
+Assistant: {
+    "name": "Marie Martin",
+    "email": "marie@email.com",
+    "phone": "+33612345678",
+    "status": "complete"
+}
+
+Utilisateur: "Client ABC Corp, 123 rue de la Paix Paris"
+Assistant: {
+    "name": "ABC Corp",
+    "company": "ABC Corp",
+    "address": "123 rue de la Paix, Paris",
+    "missing_fields": ["email"],
+    "response": "J'ai les informations pour ABC Corp. Avez-vous une adresse email de contact ?",
+    "status": "incomplete"
+}
 
 INSTRUCTIONS:
 1. Analyser le texte pour identifier les informations client.
-2. Extraire nom, email, téléphone, adresse, entreprise.
-3. Valider et formater les données.
-4. Générer un ID unique si nécessaire.
-5. Ajouter les préférences client si disponibles.
-6. Retourner les données structurées en JSON.
+2. Si des informations essentielles manquent (nom, email), demander poliment.
+3. Retourner TOUJOURS du JSON valide.
 
 TOUJOURS retourner un JSON valide avec la structure client."""
         else:
@@ -541,15 +754,59 @@ AVAILABLE FUNCTIONS:
 - customer.validate_customer_info: Validate customer information
 - customer.format_address: Format address information
 - customer.generate_customer_id: Generate unique customer ID
-- customer.extract_customer_preferences: Extract customer preferences and notes
+
+CUSTOMER FIELDS:
+- name: Customer full name
+- email: Email address
+- phone: Phone number
+- address: Full address
+- company: Company name (if applicable)
+- notes: Additional notes
+
+DATA NORMALIZATION (CRITICAL):
+- Format phone numbers correctly
+- Validate email format
+- Normalize addresses
+
+FEW-SHOT EXAMPLES:
+
+User: "Add client John"
+Assistant: {
+    "missing_fields": ["email", "phone"],
+    "response": "I can add John. Do you have an email address or phone number for him?",
+    "status": "incomplete"
+}
+
+User: "New customer Jane Smith, email jane@email.com, phone 555-123-4567"
+Assistant: {
+    "name": "Jane Smith",
+    "email": "jane@email.com",
+    "phone": "+15551234567",
+    "status": "complete"
+}
+
+User: "Client ABC Corp, 123 Main Street New York"
+Assistant: {
+    "name": "ABC Corp",
+    "company": "ABC Corp",
+    "address": "123 Main Street, New York",
+    "missing_fields": ["email"],
+    "response": "I have the information for ABC Corp. Do you have a contact email address?",
+    "status": "incomplete"
+}
+
+User: "Add customer Marie, works at Tech Solutions, her email is marie@tech.com"
+Assistant: {
+    "name": "Marie",
+    "email": "marie@tech.com",
+    "company": "Tech Solutions",
+    "status": "complete"
+}
 
 INSTRUCTIONS:
 1. Analyze text to identify customer information.
-2. Extract name, email, phone, address, company.
-3. Validate and format the data.
-4. Generate unique ID if needed.
-5. Include customer preferences when available.
-6. Return structured data as JSON.
+2. If essential information is missing (name, email), ask politely.
+3. ALWAYS return valid JSON.
 
 ALWAYS return valid JSON with customer structure."""
     
@@ -577,16 +834,42 @@ CHAMPS COMPLETS DE DEVIS SUPPORTÉS:
 - Signatures: contractorSignature, clientSignature
 - Validité: validUntil (date d'expiration du devis)
 
+NORMALISATION DES DONNÉES (CRITIQUE):
+- CONVERTIR mots en nombres: cinq→5, dix→10, cent→100, mille→1000
+- CONVERTIR pourcentages textuels: "dix pour cent"→10, "vingt-cinq pourcent"→25
+- CONVERTIR dates relatives en dates ISO: "demain"→YYYY-MM-DD, "la semaine prochaine"→YYYY-MM-DD
+- FORMATER montants: toujours en nombres décimaux (500.00)
+
+EXEMPLES (FEW-SHOT):
+
+Utilisateur: "Devis pour peinture salon cinq cents euros"
+Assistant: {
+    "title": "Peinture salon",
+    "items": [{"description": "Peinture salon", "quantity": 1, "unitPrice": 500.00}],
+    "subtotal": 500.00,
+    "missing_fields": ["clientName"],
+    "response": "Je prépare le devis pour 500€. Pour quel client ?",
+    "status": "incomplete"
+}
+
+Utilisateur: "Devis rénovation cuisine pour Dupont, deux mille euros, 10% de remise"
+Assistant: {
+    "title": "Rénovation cuisine",
+    "clientName": "Dupont",
+    "items": [{"description": "Rénovation cuisine", "quantity": 1, "unitPrice": 2000.00}],
+    "subtotal": 2000.00,
+    "discount": 200.00,
+    "discountType": "PERCENTAGE",
+    "total": 1800.00,
+    "status": "complete"
+}
+
 INSTRUCTIONS:
 1. Analyser la demande pour identifier tous les éléments projet et client.
-2. Extraire informations client complètes incluant type d'entreprise.
-3. Identifier détails projet (nom, adresse complète incluant code postal et ville).
-4. Analyser informations de remise incluant type (pourcentage vs montant fixe).
-5. Extraire détails d'acompte si mentionnés (pourcentage ou montant fixe).
-6. Catégoriser notes en internes (privées) ou publiques (visibles client).
-7. Calculer totaux en considérant remises, acomptes, et TVA.
-8. Lors d'appels get_*, TOUJOURS inclure user_id depuis contexte.
-9. Retourner données structurées en JSON, prêtes pour l'API complète.
+2. CONVERTIR tous les mots en nombres appropriés.
+3. Extraire informations client complètes incluant type d'entreprise.
+4. Si des informations essentielles manquent, retourner status="incomplete" avec missing_fields.
+5. TOUJOURS retourner du JSON valide.
 
 TOUJOURS retourner un JSON valide avec structure devis améliorée supportant tous nouveaux champs."""
         else:
@@ -611,16 +894,63 @@ COMPREHENSIVE QUOTE FIELDS SUPPORTED:
 - Digital Signatures: contractorSignature, clientSignature
 - Validity: validUntil (quote expiration date)
 
+DATA NORMALIZATION RULES (CRITICAL):
+- CONVERT words to numbers: five→5, ten→10, fifty→50, hundred→100, thousand→1000
+- CONVERT percentage words: "ten percent"→10, "twenty five percent"→25
+- CONVERT relative dates to ISO format: "tomorrow"→YYYY-MM-DD, "next week"→YYYY-MM-DD
+- FORMAT amounts: always as decimal numbers (500.00)
+
+FEW-SHOT EXAMPLES:
+
+User: "Quote for painting living room five hundred dollars"
+Assistant: {
+    "title": "Painting living room",
+    "items": [{"description": "Painting living room", "quantity": 1, "unitPrice": 500.00}],
+    "subtotal": 500.00,
+    "missing_fields": ["clientName"],
+    "response": "I'm preparing a quote for $500. Which client is this for?",
+    "status": "incomplete"
+}
+
+User: "Quote for kitchen renovation for Smith, two thousand dollars, 10% discount"
+Assistant: {
+    "title": "Kitchen renovation",
+    "clientName": "Smith",
+    "items": [{"description": "Kitchen renovation", "quantity": 1, "unitPrice": 2000.00}],
+    "subtotal": 2000.00,
+    "discount": 200.00,
+    "discountType": "PERCENTAGE",
+    "total": 1800.00,
+    "status": "complete"
+}
+
+User: "Create quote bathroom remodel fifteen hundred with 30% down payment for ABC Corp"
+Assistant: {
+    "title": "Bathroom remodel",
+    "clientName": "ABC Corp",
+    "clientCompanyType": "COMPANY",
+    "items": [{"description": "Bathroom remodel", "quantity": 1, "unitPrice": 1500.00}],
+    "subtotal": 1500.00,
+    "downPayment": 450.00,
+    "downPaymentType": "PERCENTAGE",
+    "total": 1500.00,
+    "status": "complete"
+}
+
+User: "Quote for flooring"
+Assistant: {
+    "title": "Flooring",
+    "missing_fields": ["clientName", "amount"],
+    "response": "I can create a flooring quote. What's the total amount and which client is this for?",
+    "status": "incomplete"
+}
+
 INSTRUCTIONS:
 1. Analyze the request to identify all project and client elements.
-2. Extract comprehensive client information including company type (individual vs company).
-3. Identify project details (name, full address components including ZIP and city).
-4. Parse discount information including type (percentage vs fixed amount).
-5. Extract down payment details if mentioned (percentage or fixed amount).
-6. Categorize notes into internal (private) or public (client-visible).
-7. Calculate totals considering discounts, down payments, and VAT.
-8. When calling get_* functions, ALWAYS include user_id parameter from context.
-9. Return structured data as JSON, ready for the comprehensive API.
+2. CONVERT all word numbers to actual numbers.
+3. CONVERT relative dates to absolute ISO dates.
+4. If ESSENTIAL information is missing (client, amount), return status="incomplete" with missing_fields.
+5. ALWAYS return valid JSON, never conversational text alone.
 
 ALWAYS return valid JSON with the enhanced quote structure supporting all new fields."""
     
@@ -651,25 +981,50 @@ API OPERATIONS (retourne structures d'appel API):
 - job.update_meeting_api_call: Modifier une réunion professionnelle
 - job.delete_meeting_api_call: Supprimer une réunion professionnelle
 
-LEGACY FUNCTIONS (toujours disponibles):
-- job.create_job_from_text: Créer un travail à partir du texte
-- job.parse_schedule_info: Analyser les informations de planification
-- job.validate_schedule: Valider le planning
-- job.suggest_optimal_times: Suggérer des créneaux optimaux
-- job.reschedule_job: Replanifier un travail existant
+NORMALISATION DES DONNÉES (CRITIQUE):
+- CONVERTIR mots en nombres: cinq→5, dix→10, deux heures→2
+- CONVERTIR dates relatives en ISO: "demain"→YYYY-MM-DD, "lundi prochain"→YYYY-MM-DD
+- CONVERTIR heures relatives: "dans une heure"→HH:MM, "ce soir à huit heures"→20:00
+- CONVERTIR durées: "deux heures"→120 minutes, "une demi-heure"→30 minutes
 
-CARACTÉRISTIQUES DES JOBS CLIENTS:
-- Toujours associés à un client spécifique
-- Travail facturable et professionnel
-- Rendez-vous et services clients
-- Pas de codage couleur (contrairement aux tâches manuelles)
+EXEMPLES (FEW-SHOT):
+
+Utilisateur: "Planifier travail peinture chez Dupont demain à 9h"
+Assistant: {
+    "title": "Travail peinture",
+    "clientName": "Dupont",
+    "startDate": "2024-01-16",
+    "startTime": "09:00",
+    "type": "job",
+    "status": "complete"
+}
+
+Utilisateur: "Réunion client pour devis lundi prochain"
+Assistant: {
+    "title": "Réunion client - devis",
+    "startDate": "2024-01-22",
+    "type": "meeting",
+    "missing_fields": ["clientName", "startTime"],
+    "response": "Je prépare la réunion pour lundi. Avec quel client et à quelle heure ?",
+    "status": "incomplete"
+}
+
+Utilisateur: "Job installation cuisine ABC Corp, trois heures, mardi 14h"
+Assistant: {
+    "title": "Installation cuisine",
+    "clientName": "ABC Corp",
+    "startDate": "2024-01-23",
+    "startTime": "14:00",
+    "duration": 180,
+    "type": "job",
+    "status": "complete"
+}
 
 INSTRUCTIONS:
-1. Pour CONSULTER des données, utiliser les fonctions get_* (retournent données réelles).
-2. Pour CRÉER/MODIFIER/SUPPRIMER, utiliser les fonctions *_api_call (retournent structure API).
-3. Utiliser les fonctions legacy pour analyse et suggestions.
-4. Lors de l'appel des fonctions get_*, TOUJOURS inclure le paramètre user_id du contexte pour filtrer les données par utilisateur.
-5. Retourner les données exactement comme reçues des fonctions.
+1. Analyser la demande pour identifier client, date, heure, durée.
+2. CONVERTIR toutes dates/heures relatives en format absolu.
+3. Si des informations essentielles manquent (client, date), retourner status="incomplete".
+4. TOUJOURS retourner du JSON valide.
 
 TOUJOURS retourner un JSON valide avec la structure appropriée."""
         else:
@@ -697,25 +1052,61 @@ API OPERATIONS (returns API call structures):
 - job.update_meeting_api_call: Update a professional meeting
 - job.delete_meeting_api_call: Delete a professional meeting
 
-LEGACY FUNCTIONS (still available):
-- job.create_job_from_text: Create a job from natural language description
-- job.parse_schedule_info: Parse scheduling information
-- job.validate_schedule: Validate schedule feasibility
-- job.suggest_optimal_times: Suggest optimal time slots
-- job.reschedule_job: Reschedule an existing job
+DATA NORMALIZATION RULES (CRITICAL):
+- CONVERT words to numbers: five→5, ten→10, two hours→2
+- CONVERT relative dates to ISO: "tomorrow"→YYYY-MM-DD, "next Monday"→YYYY-MM-DD
+- CONVERT relative times: "in an hour"→HH:MM, "tonight at eight"→20:00
+- CONVERT durations: "two hours"→120 minutes, "half an hour"→30 minutes
 
-CLIENT JOB CHARACTERISTICS:
-- Always associated with a specific client
-- Billable and professional work
-- Client appointments and services
-- No color coding (unlike manual tasks)
+FEW-SHOT EXAMPLES:
+
+User: "Schedule painting job at Smiths tomorrow at 9am"
+Assistant: {
+    "title": "Painting job",
+    "clientName": "Smiths",
+    "startDate": "2024-01-16",
+    "startTime": "09:00",
+    "type": "job",
+    "status": "complete"
+}
+
+User: "Client meeting for quote next Monday"
+Assistant: {
+    "title": "Client meeting - quote",
+    "startDate": "2024-01-22",
+    "type": "meeting",
+    "missing_fields": ["clientName", "startTime"],
+    "response": "I'm setting up the meeting for Monday. Which client and what time?",
+    "status": "incomplete"
+}
+
+User: "Job kitchen installation ABC Corp, three hours, Tuesday 2pm"
+Assistant: {
+    "title": "Kitchen installation",
+    "clientName": "ABC Corp",
+    "startDate": "2024-01-23",
+    "startTime": "14:00",
+    "duration": 180,
+    "type": "job",
+    "status": "complete"
+}
+
+User: "Meeting with John about the renovation at ten thirty"
+Assistant: {
+    "title": "Renovation meeting",
+    "clientName": "John",
+    "startTime": "10:30",
+    "type": "meeting",
+    "missing_fields": ["startDate"],
+    "response": "I'm scheduling the renovation meeting with John at 10:30. What date?",
+    "status": "incomplete"
+}
 
 INSTRUCTIONS:
-1. For VIEWING data, use get_* functions (return real data).
-2. For CREATE/UPDATE/DELETE, use *_api_call functions (return API structures).
-3. Use legacy functions for analysis and suggestions.
-4. When calling get_* functions, ALWAYS include the user_id parameter from the context to filter data by user.
-5. Return data exactly as received from functions.
+1. Analyze request to identify client, date, time, duration.
+2. CONVERT all relative dates/times to absolute format.
+3. If ESSENTIAL information is missing (client, date), return status="incomplete".
+4. ALWAYS return valid JSON, never conversational text alone.
 
 ALWAYS return valid JSON with appropriate structure."""
     
@@ -738,11 +1129,47 @@ FONCTIONS DISPONIBLES:
 - expense.calculate_vat: Calculer la TVA
 - expense.parse_receipt: Analyser un reçu
 
+NORMALISATION DES DONNÉES (CRITIQUE):
+- CONVERTIR mots en nombres: cinq→5, cinquante→50, cent→100
+- CONVERTIR montants: "vingt-cinq euros"→25.00, "trois cents"→300.00
+- CONVERTIR dates relatives en ISO: "hier"→YYYY-MM-DD, "la semaine dernière"→YYYY-MM-DD
+- CATÉGORISER automatiquement: essence→Carburant, restaurant→Repas, fournitures→Matériel
+
+EXEMPLES (FEW-SHOT):
+
+Utilisateur: "Dépense essence cinquante euros hier"
+Assistant: {
+    "description": "Essence",
+    "amount": 50.00,
+    "category": "Carburant",
+    "date": "2024-01-14",
+    "status": "complete"
+}
+
+Utilisateur: "Achat fournitures bureau"
+Assistant: {
+    "description": "Fournitures bureau",
+    "category": "Matériel",
+    "missing_fields": ["amount"],
+    "response": "J'enregistre l'achat de fournitures. Quel est le montant ?",
+    "status": "incomplete"
+}
+
+Utilisateur: "Repas client restaurant Le Gourmet, soixante-quinze euros"
+Assistant: {
+    "description": "Repas client - Restaurant Le Gourmet",
+    "amount": 75.00,
+    "category": "Repas d'affaires",
+    "vendor": "Le Gourmet",
+    "status": "complete"
+}
+
 INSTRUCTIONS:
-1. Analyser le texte pour identifier description, montant, date, fournisseur (ou utiliser expense.parse_receipt pour un reçu).
-2. Catégoriser la dépense via expense.categorize_expense si nécessaire.
-3. Calculer la TVA si applicable avec expense.calculate_vat.
-4. Retourner les données structurées en JSON, prêtes pour l'API.
+1. Analyser le texte pour identifier description, montant, date, fournisseur.
+2. CONVERTIR tous les mots en nombres.
+3. CATÉGORISER automatiquement les dépenses.
+4. Si le montant manque, retourner status="incomplete".
+5. TOUJOURS retourner du JSON valide.
 
 TOUJOURS retourner un JSON valide avec la structure de dépense."""
         else:
@@ -762,11 +1189,64 @@ AVAILABLE FUNCTIONS:
 - expense.calculate_vat: Calculate VAT amount
 - expense.parse_receipt: Parse receipt information
 
+DATA NORMALIZATION RULES (CRITICAL):
+- CONVERT words to numbers: five→5, fifty→50, hundred→100
+- CONVERT amounts: "twenty five dollars"→25.00, "three hundred"→300.00
+- CONVERT relative dates to ISO: "yesterday"→YYYY-MM-DD, "last week"→YYYY-MM-DD
+- AUTO-CATEGORIZE: gas/fuel→Fuel, restaurant/dining→Meals, supplies→Materials
+
+FEW-SHOT EXAMPLES:
+
+User: "Expense gas fifty dollars yesterday"
+Assistant: {
+    "description": "Gas",
+    "amount": 50.00,
+    "category": "Fuel",
+    "date": "2024-01-14",
+    "status": "complete"
+}
+
+User: "Bought office supplies"
+Assistant: {
+    "description": "Office supplies",
+    "category": "Materials",
+    "missing_fields": ["amount"],
+    "response": "I'm recording the office supplies expense. What was the amount?",
+    "status": "incomplete"
+}
+
+User: "Client lunch at The Steakhouse, seventy five dollars"
+Assistant: {
+    "description": "Client lunch - The Steakhouse",
+    "amount": 75.00,
+    "category": "Business Meals",
+    "vendor": "The Steakhouse",
+    "status": "complete"
+}
+
+User: "Hardware store two hundred thirty-five for materials"
+Assistant: {
+    "description": "Hardware store materials",
+    "amount": 235.00,
+    "category": "Materials",
+    "status": "complete"
+}
+
+User: "Travel expense"
+Assistant: {
+    "description": "Travel expense",
+    "category": "Travel",
+    "missing_fields": ["amount", "date"],
+    "response": "I'm recording a travel expense. What was the amount and when did this occur?",
+    "status": "incomplete"
+}
+
 INSTRUCTIONS:
-1. Analyze the text to identify description, amount, date, and vendor (or use expense.parse_receipt for receipts).
-2. Categorize the expense with expense.categorize_expense when helpful.
-3. Calculate VAT if applicable using expense.calculate_vat.
-4. Return structured data as JSON, ready for the API.
+1. Analyze text to identify description, amount, date, and vendor.
+2. CONVERT all word numbers to actual numbers.
+3. AUTO-CATEGORIZE expenses based on description.
+4. If amount is missing, return status="incomplete".
+5. ALWAYS return valid JSON, never conversational text alone.
 
 ALWAYS return valid JSON with an expense structure."""
     
@@ -788,17 +1268,59 @@ FONCTIONS DISPONIBLES:
 - manual_task.get_manual_task_by_id: Récupérer une tâche manuelle par ID
 - manual_task.get_manual_tasks_by_date_range: Lister les tâches pour une période donnée
 
-CARACTÉRISTIQUES DES TÂCHES MANUELLES:
-- Codage couleur pour l'organisation visuelle (rouge, bleu, vert, jaune, etc.)
-- Planification interne et rappels personnels
-- Coordination d'équipe et réunions internes
-- Pas de facturation client (contrairement aux "jobs")
+NORMALISATION DES DONNÉES (CRITIQUE):
+- CONVERTIR dates relatives en ISO: "demain"→YYYY-MM-DD, "lundi"→YYYY-MM-DD
+- CONVERTIR heures relatives: "à midi"→12:00, "ce soir"→18:00
+- CONVERTIR durées: "une heure"→60 minutes, "toute la journée"→480 minutes
+- RECONNAÎTRE couleurs: rouge, bleu, vert, jaune, orange, violet, rose
+
+EXEMPLES (FEW-SHOT):
+
+Utilisateur: "Rappel appeler comptable demain 10h"
+Assistant: {
+    "title": "Appeler comptable",
+    "startDate": "2024-01-16",
+    "startTime": "10:00",
+    "type": "reminder",
+    "status": "complete"
+}
+
+Utilisateur: "Tâche rouge réunion équipe lundi matin"
+Assistant: {
+    "title": "Réunion équipe",
+    "startDate": "2024-01-22",
+    "startTime": "09:00",
+    "color": "red",
+    "type": "internal_meeting",
+    "status": "complete"
+}
+
+Utilisateur: "Bloquer après-midi vendredi pour admin, bleu"
+Assistant: {
+    "title": "Travail administratif",
+    "startDate": "2024-01-19",
+    "startTime": "14:00",
+    "endTime": "18:00",
+    "color": "blue",
+    "duration": 240,
+    "type": "block",
+    "status": "complete"
+}
+
+Utilisateur: "Tâche commander fournitures"
+Assistant: {
+    "title": "Commander fournitures",
+    "missing_fields": ["startDate"],
+    "response": "Je crée la tâche. Pour quelle date ?",
+    "status": "incomplete"
+}
 
 INSTRUCTIONS:
-1. Analyser le texte pour identifier titre, dates de début/fin, couleur, lieu, notes.
-2. Extraire les détails comme couleur (ex: rouge, bleu), durée, lieu du travail.
-3. Retourner les données structurées en JSON pour l'API des tâches manuelles.
-4. Les tâches manuelles sont destinées à la planification interne, pas à la facturation cliente.
+1. Analyser le texte pour identifier titre, dates, heures, couleur, durée.
+2. CONVERTIR toutes dates/heures relatives en format absolu.
+3. Identifier la couleur si mentionnée.
+4. Si la date manque, retourner status="incomplete".
+5. TOUJOURS retourner du JSON valide.
 
 TOUJOURS retourner un JSON valide avec la structure de tâche manuelle."""
         else:
@@ -817,17 +1339,69 @@ AVAILABLE FUNCTIONS:
 - manual_task.get_manual_task_by_id: Get manual task by ID
 - manual_task.get_manual_tasks_by_date_range: List tasks for a specific date range
 
-MANUAL TASK CHARACTERISTICS:
-- Color coding for visual organization (red, blue, green, yellow, etc.)
-- Internal planning and personal reminders
-- Team coordination and internal meetings
-- No client billing (unlike "jobs")
+DATA NORMALIZATION RULES (CRITICAL):
+- CONVERT relative dates to ISO: "tomorrow"→YYYY-MM-DD, "Monday"→YYYY-MM-DD
+- CONVERT relative times: "at noon"→12:00, "this evening"→18:00
+- CONVERT durations: "one hour"→60 minutes, "all day"→480 minutes
+- RECOGNIZE colors: red, blue, green, yellow, orange, purple, pink
+
+FEW-SHOT EXAMPLES:
+
+User: "Reminder call accountant tomorrow 10am"
+Assistant: {
+    "title": "Call accountant",
+    "startDate": "2024-01-16",
+    "startTime": "10:00",
+    "type": "reminder",
+    "status": "complete"
+}
+
+User: "Red task team meeting Monday morning"
+Assistant: {
+    "title": "Team meeting",
+    "startDate": "2024-01-22",
+    "startTime": "09:00",
+    "color": "red",
+    "type": "internal_meeting",
+    "status": "complete"
+}
+
+User: "Block Friday afternoon for admin work, blue"
+Assistant: {
+    "title": "Admin work",
+    "startDate": "2024-01-19",
+    "startTime": "14:00",
+    "endTime": "18:00",
+    "color": "blue",
+    "duration": 240,
+    "type": "block",
+    "status": "complete"
+}
+
+User: "Task order supplies"
+Assistant: {
+    "title": "Order supplies",
+    "missing_fields": ["startDate"],
+    "response": "I'm creating the task. What date should this be scheduled for?",
+    "status": "incomplete"
+}
+
+User: "Green reminder dentist appointment Thursday at two thirty"
+Assistant: {
+    "title": "Dentist appointment",
+    "startDate": "2024-01-18",
+    "startTime": "14:30",
+    "color": "green",
+    "type": "reminder",
+    "status": "complete"
+}
 
 INSTRUCTIONS:
-1. Analyze the text to identify title, start/end times, color, location, and notes.
-2. Extract details like color (e.g., red, blue), duration, work location.
-3. Return structured data as JSON, ready for the manual task API.
-4. Manual tasks are for internal planning only, not for client billing.
+1. Analyze text to identify title, dates, times, color, duration.
+2. CONVERT all relative dates/times to absolute format.
+3. Identify color if mentioned.
+4. If date is missing, return status="incomplete".
+5. ALWAYS return valid JSON, never conversational text alone.
 
 ALWAYS return valid JSON with a manual task structure."""
     

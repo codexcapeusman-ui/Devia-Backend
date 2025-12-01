@@ -148,6 +148,11 @@ class UnifiedAgentService:
                     "action": "reset"
                 }
 
+            # 1. Add User Input to History
+            conversation["history"].append({"role": "user", "content": prompt})
+            
+            # ... (Existing Reset Logic) ...
+
             # Step 1: Intent Detection (if not already detected)
             if conversation["state"] == ConversationState.INTENT_DETECTION:
                 intent, operation, confidence = await self._detect_intent(prompt, language)
@@ -202,7 +207,7 @@ class UnifiedAgentService:
             # Step 2: Data Extraction (initial or additional data)
             if conversation["state"] in [ConversationState.DATA_EXTRACTION, ConversationState.DATA_COMPLETION]:
                 extracted_data = await self._extract_data(
-                    prompt, conversation["intent"], conversation.get("operation", Operation.UNKNOWN), language
+                    prompt, conversation["intent"], conversation.get("operation", Operation.UNKNOWN), language, conversation["history"]  # Pass history
                 )
                 
                 # Merge data intelligently - preserve existing valid data
@@ -217,7 +222,7 @@ class UnifiedAgentService:
                 
                 if missing_fields:
                     # Check if we've already asked for missing data 2 times
-                    if conversation.get("missing_data_attempts", 0) >= 2:
+                    if conversation.get("missing_data_attempts", 0) >= 3: # Increased to 3
                         self.logger.info(f"Max attempts reached, filling missing fields with N/A: {missing_fields}")
                         # Fill missing fields with "N/A" and proceed
                         for field in missing_fields:
@@ -231,9 +236,13 @@ class UnifiedAgentService:
                     else:
                         # Increment attempt counter and ask for missing data
                         conversation["missing_data_attempts"] = conversation.get("missing_data_attempts", 0) + 1
-                        return self._create_missing_data_response(
-                            conversation, missing_fields, language
-                        )
+                        
+                        # Generate the question
+                        response = self._create_missing_data_response(conversation, missing_fields, language)
+                        
+                        # Add AI Question to History so it remembers it asked!
+                        conversation["history"].append({"role": "assistant", "content": response["message"]})
+                        return response
                 else:
                     conversation["state"] = ConversationState.RESPONSE_GENERATION
             
@@ -406,12 +415,16 @@ class UnifiedAgentService:
                 except ValueError:
                     operation = Operation.UNKNOWN
                 
-                return intent, operation, confidence
+                # If AI returns valid result with confidence > 0.6, RETURN IT IMMEDIATELY.
+                if confidence > 0.6:
+                    return intent, operation, confidence
             
         except Exception as e:
             self.logger.error(f"Intent detection failed: {e}")
         
-        # Fallback: Simple pattern matching for common GET operations
+        # ONLY REACH HERE IF AI FAILED OR CONFIDENCE IS LOW
+        
+        # Fallback: Simple pattern matching
         prompt_lower = prompt.lower()
         
         # Check for common GET patterns
@@ -434,7 +447,8 @@ class UnifiedAgentService:
         prompt: str, 
         intent: Intent, 
         operation: Operation,
-        language: str
+        language: str,
+        history: List[Dict] = None # NEW ARGUMENT
     ) -> Dict[str, Any]:
         """
         Extract relevant data fields based on the detected intent
@@ -576,37 +590,43 @@ class UnifiedAgentService:
                 result = await self.sk_service.process_invoice_request(
                     prompt=full_prompt,
                     context={"task": "data_extraction"},
-                    language=language
+                    language=language,
+                    history=history # Pass it here
                 )
             elif intent == Intent.QUOTE:
                 result = await self.sk_service.process_quote_request(
                     prompt=full_prompt,
                     context={"task": "data_extraction"},
-                    language=language
+                    language=language,
+                    history=history # Pass it here
                 )
             elif intent == Intent.CUSTOMER:
                 result = await self.sk_service.process_customer_request(
                     prompt=full_prompt,
                     context={"task": "data_extraction"},
-                    language=language
+                    language=language,
+                    history=history # Pass it here
                 )
             elif intent == Intent.JOB:
                 result = await self.sk_service.process_job_request(
                     prompt=full_prompt,
                     context={"task": "data_extraction"},
-                    language=language
+                    language=language,
+                    history=history # Pass it here
                 )
             elif intent == Intent.EXPENSE:
                 result = await self.sk_service.process_expense_request(
                     prompt=full_prompt,
                     context={"task": "data_extraction"},
-                    language=language
+                    language=language,
+                    history=history # Pass it here
                 )
             elif intent == Intent.MANUAL_TASK:
                 result = await self.sk_service.process_manual_task_request(
                     prompt=full_prompt,
                     context={"task": "data_extraction"},
-                    language=language
+                    language=language,
+                    history=history # Pass it here
                 )
             else:
                 return {}
@@ -970,12 +990,11 @@ class UnifiedAgentService:
                 "intent": None,
                 "confidence": 0.0,
                 "data": {},
-                "missing_data_attempts": 0,  # Track how many times we asked for missing data
+                "missing_data_attempts": 0,
+                "history": [],  # Initialize history list
                 "created_at": datetime.now().isoformat(),
                 "updated_at": datetime.now().isoformat()
             }
-        
-        self.conversations[user_id]["updated_at"] = datetime.now().isoformat()
         return self.conversations[user_id]
     
     def _create_clarification_response(

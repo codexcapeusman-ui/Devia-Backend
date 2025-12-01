@@ -5,6 +5,7 @@ Handles single prompt workflow with intent detection, data extraction, and respo
 
 import json
 import logging
+import re
 import uuid
 from typing import Dict, Any, Optional, List, Tuple
 from datetime import datetime
@@ -21,7 +22,8 @@ from config.settings import Settings
 
 class Intent(str, Enum):
     """Supported intents for AI agent - Order matters for priority"""
-    MANUAL_TASK = "manual_task"  # HIGH PRIORITY - Check first
+    CHIT_CHAT = "chit_chat"  # HIGHEST PRIORITY - Handle greetings/casual conversation first
+    MANUAL_TASK = "manual_task"  # HIGH PRIORITY - Check first for tasks
     CUSTOMER = "customer"
     INVOICE = "invoice"
     QUOTE = "quote"
@@ -134,6 +136,11 @@ class UnifiedAgentService:
                     "action": "reset"
                 }
 
+            # 1. Add User Input to History
+            conversation["history"].append({"role": "user", "content": prompt})
+            
+            # ... (Existing Reset Logic) ...
+
             # Step 1: Intent Detection (for new conversations)
             if conversation["state"] == ConversationState.INTENT_DETECTION:
                 intent, operation, confidence = await self._detect_intent(prompt, language)
@@ -143,6 +150,14 @@ class UnifiedAgentService:
                 conversation["data"] = {}
 
                 self.logger.info(f"Intent detection result: intent={intent}, operation={operation}, confidence={confidence}")
+
+                # Handle CHIT_CHAT intent - respond conversationally and don't proceed with business logic
+                if intent == Intent.CHIT_CHAT:
+                    self.logger.info("Detected chit-chat intent, responding conversationally")
+                    chit_chat_response = await self._generate_chit_chat_response(prompt, language)
+                    # Reset conversation for next interaction
+                    self.reset_conversation(user_id)
+                    return chit_chat_response
 
                 # Special handling for "get all" queries - skip data extraction entirely
                 if operation == Operation.GET and self._is_get_all_query(prompt):
@@ -195,7 +210,7 @@ class UnifiedAgentService:
             # Step 2: Data Extraction (initial or additional data)
             if conversation["state"] in [ConversationState.DATA_EXTRACTION, ConversationState.DATA_COMPLETION]:
                 extracted_data = await self._extract_data(
-                    prompt, conversation["intent"], conversation.get("operation", Operation.UNKNOWN), language
+                    prompt, conversation["intent"], conversation.get("operation", Operation.UNKNOWN), language, conversation["history"]  # Pass history
                 )
                 
                 # Merge data intelligently - preserve existing valid data
@@ -210,7 +225,7 @@ class UnifiedAgentService:
                 
                 if missing_fields:
                     # Check if we've already asked for missing data 2 times
-                    if conversation.get("missing_data_attempts", 0) >= 2:
+                    if conversation.get("missing_data_attempts", 0) >= 3: # Increased to 3
                         self.logger.info(f"Max attempts reached, filling missing fields with N/A: {missing_fields}")
                         # Fill missing fields with "N/A" and proceed
                         for field in missing_fields:
@@ -224,9 +239,13 @@ class UnifiedAgentService:
                     else:
                         # Increment attempt counter and ask for missing data
                         conversation["missing_data_attempts"] = conversation.get("missing_data_attempts", 0) + 1
-                        return self._create_missing_data_response(
-                            conversation, missing_fields, language
-                        )
+                        
+                        # Generate the question
+                        response = self._create_missing_data_response(conversation, missing_fields, language)
+                        
+                        # Add AI Question to History so it remembers it asked!
+                        conversation["history"].append({"role": "assistant", "content": response["message"]})
+                        return response
                 else:
                     conversation["state"] = ConversationState.RESPONSE_GENERATION
             
@@ -273,26 +292,51 @@ class UnifiedAgentService:
         Returns:
             Tuple of (intent, operation, confidence_score)
         """
+        # First check for chit-chat patterns (quick check before calling LLM)
+        chit_chat_patterns = [
+            r"^(hi|hello|hey|bonjour|salut|coucou|good\s*(morning|afternoon|evening)|what'?s?\s*up)[\s!.?]*$",
+            r"^(thanks?|thank\s*you|merci|awesome|great|perfect|ok|okay|cool|nice|got\s*it)[\s!.?]*$",
+            r"^(bye|goodbye|see\s*you|au\s*revoir|ciao|later)[\s!.?]*$",
+            r"^(how\s*are\s*you|how'?s?\s*it\s*going|comment\s*(ça\s*)?va|ça\s*va)[\s!.?]*$",
+            r"^(who\s*are\s*you|what\s*can\s*you\s*do|help|aide)[\s!.?]*$",
+        ]
+        
+        prompt_lower = prompt.strip().lower()
+        for pattern in chit_chat_patterns:
+            if re.search(pattern, prompt_lower, re.IGNORECASE):
+                return Intent.CHIT_CHAT, Operation.UNKNOWN, 0.95
+        
         intent_prompt = f"""
         Analyze this user prompt and determine their intent and operation. Respond with JSON only.
         
         User prompt: "{prompt}"
         
         INTENT DETECTION PRIORITY ORDER (Check in this order):
-        1. MANUAL_TASK (Highest Priority)
-        2. CUSTOMER
-        3. INVOICE 
-        4. QUOTE
-        5. EXPENSE
-        6. JOB (Lowest Priority - only if no other intent matches)
+        1. CHIT_CHAT (Highest Priority) - Greetings, thanks, casual conversation
+        2. MANUAL_TASK 
+        3. CUSTOMER
+        4. INVOICE 
+        5. QUOTE
+        6. EXPENSE
+        7. JOB (Lowest Priority - only if no other intent matches)
         
         OPERATIONS:
         - get: Viewing/retrieving existing data (show, list, get, display, find, see, view, retrieve, "all my")
         - create: Creating new data (create, add, schedule, book, make, generate, new)
         - update: Modifying existing data (update, change, modify, edit, adjust)
         - delete: Removing data (delete, remove, cancel, eliminate)
+        - unknown: For chit-chat or unclear operations
         
-        MANUAL_TASK INDICATORS (Check FIRST - Highest Priority):
+        CHIT_CHAT INDICATORS (Check FIRST - Highest Priority):
+        ✅ Greetings: "hi", "hello", "hey", "good morning", "bonjour", "salut"
+        ✅ Thanks: "thanks", "thank you", "merci", "awesome", "great", "perfect"
+        ✅ Farewells: "bye", "goodbye", "see you", "au revoir"
+        ✅ Small talk: "how are you", "what's up", "how's it going"
+        ✅ Help requests: "help", "what can you do", "who are you"
+        ✅ Acknowledgments: "ok", "okay", "got it", "understood", "cool", "nice"
+        ✅ No business keywords present
+        
+        MANUAL_TASK INDICATORS (Check SECOND):
         ✅ Color words: red, blue, green, yellow, orange, purple, pink, black, white, gray
         ✅ Task language: "task", "manual task", "planning", "reminder", "internal"
         ✅ Personal/team context: "my task", "remind me", "team meeting", "internal planning"
@@ -319,11 +363,20 @@ class UnifiedAgentService:
         ✅ Professional appointments: "appointment with client", "customer service call"
         
         CRITICAL RULES:
+        🔴 IF greeting/thanks/farewell/small talk → ALWAYS chit_chat
         🔴 IF color mentioned → ALWAYS manual_task (red task, blue work, green reminder)
         🔴 IF "task" + no client name → ALWAYS manual_task  
         🔴 IF "planning" or "reminder" → ALWAYS manual_task
         🔴 IF client name mentioned → Then consider job
         🔴 IF just time/date without client → manual_task
+        
+        EXAMPLES - CHIT_CHAT:
+        ✅ "Hello!" → chit_chat, unknown
+        ✅ "Hi there" → chit_chat, unknown
+        ✅ "Thanks!" → chit_chat, unknown
+        ✅ "How are you?" → chit_chat, unknown
+        ✅ "What can you do?" → chit_chat, unknown
+        ✅ "Great, thanks" → chit_chat, unknown
         
         EXAMPLES - MANUAL_TASK (High Priority):
         ❌ "create a red placo work task for tomorrow 9-5" → manual_task, create
@@ -415,12 +468,16 @@ class UnifiedAgentService:
                 except ValueError:
                     operation = Operation.UNKNOWN
                 
-                return intent, operation, confidence
+                # If AI returns valid result with confidence > 0.6, RETURN IT IMMEDIATELY.
+                if confidence > 0.6:
+                    return intent, operation, confidence
             
         except Exception as e:
             self.logger.error(f"Intent detection failed: {e}")
         
-        # Fallback: Simple pattern matching for common GET operations
+        # ONLY REACH HERE IF AI FAILED OR CONFIDENCE IS LOW
+        
+        # Fallback: Simple pattern matching
         prompt_lower = prompt.lower()
         
         # Check for common GET patterns
@@ -443,7 +500,8 @@ class UnifiedAgentService:
         prompt: str, 
         intent: Intent, 
         operation: Operation,
-        language: str
+        language: str,
+        history: List[Dict] = None # NEW ARGUMENT
     ) -> Dict[str, Any]:
         """
         Extract relevant data fields based on the detected intent
@@ -633,43 +691,50 @@ class UnifiedAgentService:
                 result = await self.sk_service.process_manual_task_request(
                     prompt=full_prompt,
                     context={"task": "data_extraction"},
-                    language=language
+                    language=language,
+                    history=history # Pass it here
                 )
             elif intent == Intent.CUSTOMER:
                 result = await self.sk_service.process_customer_request(
                     prompt=full_prompt,
                     context={"task": "data_extraction"},
-                    language=language
+                    language=language,
+                    history=history # Pass it here
                 )
             elif intent == Intent.INVOICE:
                 result = await self.sk_service.process_invoice_request(
                     prompt=full_prompt,
                     context={"task": "data_extraction"},
-                    language=language
+                    language=language,
+                    history=history # Pass it here
                 )
             elif intent == Intent.QUOTE:
                 result = await self.sk_service.process_quote_request(
                     prompt=full_prompt,
                     context={"task": "data_extraction"},
-                    language=language
+                    language=language,
+                    history=history # Pass it here
                 )
             elif intent == Intent.EXPENSE:
                 result = await self.sk_service.process_expense_request(
                     prompt=full_prompt,
                     context={"task": "data_extraction"},
-                    language=language
+                    language=language,
+                    history=history # Pass it here
                 )
             elif intent == Intent.JOB:
                 result = await self.sk_service.process_job_request(
                     prompt=full_prompt,
                     context={"task": "data_extraction"},
-                    language=language
+                    language=language,
+                    history=history # Pass it here
                 )
             elif intent == Intent.MANUAL_TASK:
                 result = await self.sk_service.process_manual_task_request(
                     prompt=full_prompt,
                     context={"task": "data_extraction"},
-                    language=language
+                    language=language,
+                    history=history # Pass it here
                 )
             else:
                 return {}
@@ -995,6 +1060,108 @@ class UnifiedAgentService:
         
         return base_response
     
+    async def _generate_chit_chat_response(self, prompt: str, language: str) -> Dict[str, Any]:
+        """
+        Generate a friendly conversational response for chit-chat intents.
+        This makes the bot feel more human and approachable.
+        
+        Args:
+            prompt: User's conversational message
+            language: Language preference (en/fr)
+            
+        Returns:
+            Friendly response dictionary
+        """
+        prompt_lower = prompt.strip().lower()
+        
+        # Define response templates based on common patterns
+        responses = {
+            "en": {
+                "greeting": [
+                    "Hello! 👋 How can I help you with your business today?",
+                    "Hi there! Ready to help you manage invoices, quotes, clients, or expenses. What would you like to do?",
+                    "Hey! Good to see you. What can I assist you with today?"
+                ],
+                "thanks": [
+                    "You're welcome! Let me know if you need anything else. 😊",
+                    "Happy to help! Is there anything else I can do for you?",
+                    "No problem! Feel free to ask if you need more assistance."
+                ],
+                "farewell": [
+                    "Goodbye! Have a great day! 👋",
+                    "See you later! Don't hesitate to come back if you need help.",
+                    "Take care! I'll be here when you need me."
+                ],
+                "how_are_you": [
+                    "I'm doing great, thanks for asking! Ready to help you with your business tasks. What would you like to do?",
+                    "I'm here and ready to assist! How can I help you today?"
+                ],
+                "help": [
+                    "I'm your business assistant! I can help you with:\\n• Creating and managing invoices\\n• Generating quotes\\n• Managing clients/customers\\n• Scheduling jobs and tasks\\n• Tracking expenses\\n\\nJust tell me what you need!",
+                    "I can assist you with invoices, quotes, client management, job scheduling, and expense tracking. What would you like to work on?"
+                ],
+                "default": [
+                    "I'm here to help with your business tasks! Would you like to create an invoice, quote, manage clients, schedule work, or track expenses?",
+                    "Thanks for chatting! How can I assist you with your business today?"
+                ]
+            },
+            "fr": {
+                "greeting": [
+                    "Bonjour ! 👋 Comment puis-je vous aider avec votre entreprise aujourd'hui ?",
+                    "Salut ! Prêt à vous aider à gérer factures, devis, clients ou dépenses. Que souhaitez-vous faire ?",
+                    "Bonjour ! Content de vous voir. En quoi puis-je vous aider ?"
+                ],
+                "thanks": [
+                    "De rien ! N'hésitez pas si vous avez besoin d'autre chose. 😊",
+                    "Avec plaisir ! Y a-t-il autre chose que je peux faire pour vous ?",
+                    "Pas de problème ! N'hésitez pas à demander si vous avez besoin d'aide."
+                ],
+                "farewell": [
+                    "Au revoir ! Passez une excellente journée ! 👋",
+                    "À bientôt ! N'hésitez pas à revenir si vous avez besoin d'aide.",
+                    "Prenez soin de vous ! Je serai là quand vous aurez besoin de moi."
+                ],
+                "how_are_you": [
+                    "Je vais très bien, merci de demander ! Prêt à vous aider avec vos tâches professionnelles. Que souhaitez-vous faire ?",
+                    "Je suis là et prêt à vous aider ! Comment puis-je vous aider aujourd'hui ?"
+                ],
+                "help": [
+                    "Je suis votre assistant professionnel ! Je peux vous aider avec :\\n• Création et gestion de factures\\n• Génération de devis\\n• Gestion des clients\\n• Planification de travaux et tâches\\n• Suivi des dépenses\\n\\nDites-moi ce dont vous avez besoin !",
+                    "Je peux vous aider avec les factures, devis, gestion clients, planification de travaux et suivi des dépenses. Sur quoi souhaitez-vous travailler ?"
+                ],
+                "default": [
+                    "Je suis là pour vous aider avec vos tâches professionnelles ! Souhaitez-vous créer une facture, un devis, gérer des clients, planifier du travail ou suivre des dépenses ?",
+                    "Merci de discuter ! Comment puis-je vous aider avec votre entreprise aujourd'hui ?"
+                ]
+            }
+        }
+        
+        lang_responses = responses.get(language, responses["en"])
+        
+        # Determine response category
+        import random
+        if any(word in prompt_lower for word in ["hi", "hello", "hey", "bonjour", "salut", "coucou", "good morning", "good afternoon", "good evening"]):
+            category = "greeting"
+        elif any(word in prompt_lower for word in ["thanks", "thank you", "merci", "awesome", "great", "perfect", "cool", "nice"]):
+            category = "thanks"
+        elif any(word in prompt_lower for word in ["bye", "goodbye", "see you", "au revoir", "ciao", "later"]):
+            category = "farewell"
+        elif any(word in prompt_lower for word in ["how are you", "how's it going", "comment ça va", "ça va", "what's up"]):
+            category = "how_are_you"
+        elif any(word in prompt_lower for word in ["help", "what can you do", "who are you", "aide", "que peux-tu faire"]):
+            category = "help"
+        else:
+            category = "default"
+        
+        response_text = random.choice(lang_responses.get(category, lang_responses["default"]))
+        
+        return {
+            "success": True,
+            "message": response_text,
+            "action": "chit_chat",
+            "intent": "chit_chat"
+        }
+    
     def _get_conversation_state(self, user_id: str) -> Dict[str, Any]:
         """
         Get or create conversation state for user
@@ -1005,12 +1172,11 @@ class UnifiedAgentService:
                 "intent": None,
                 "confidence": 0.0,
                 "data": {},
-                "missing_data_attempts": 0,  # Track how many times we asked for missing data
+                "missing_data_attempts": 0,
+                "history": [],  # Initialize history list
                 "created_at": datetime.now().isoformat(),
                 "updated_at": datetime.now().isoformat()
             }
-        
-        self.conversations[user_id]["updated_at"] = datetime.now().isoformat()
         return self.conversations[user_id]
     
     def _create_clarification_response(
