@@ -781,26 +781,39 @@ class UnifiedAgentService:
         Only updates fields that have meaningful values in new_data.
         Flattens nested structures (like 'CLIENT INFORMATION', 'QUOTE DETAILS', etc.) to top level.
         """
-        # Keys that indicate nested data sections that should be flattened
-        nested_section_keys = [
-            "extracted_data", "CLIENT INFORMATION", "PROJECT DETAILS", "QUOTE DETAILS",
-            "DISCOUNT INFORMATION", "DOWN PAYMENT INFORMATION", "TAX AND TOTALS",
-            "DATES", "NOTES", "INVOICE DETAILS", "EXPENSE DETAILS", "JOB DETAILS",
-            "TASK DETAILS", "CUSTOMER INFORMATION", "CLIENT_INFORMATION", "items"
+        # Keys that indicate nested data sections that should be flattened (normalized versions)
+        nested_section_patterns = [
+            "extracted_data", "clientinformation", "client_information", "customerinformation",
+            "projectdetails", "project_details", "quotedetails", "quote_details",
+            "invoicedetails", "invoice_details", "discountinformation", "discount_information",
+            "downpaymentinformation", "down_payment_information", "taxandtotals", "tax_and_totals",
+            "dates", "notes", "expensedetails", "expense_details", "jobdetails", "job_details",
+            "taskdetails", "task_details", "signatures"
         ]
+        
+        def is_nested_section(key: str) -> bool:
+            """Check if a key represents a nested section that should be flattened"""
+            normalized = key.lower().replace(" ", "").replace("_", "")
+            for pattern in nested_section_patterns:
+                if normalized == pattern.replace("_", ""):
+                    return True
+            return False
         
         def flatten_and_merge(data: Dict[str, Any], target: Dict[str, Any]) -> None:
             """Recursively flatten nested dictionaries and merge to target"""
             for key, value in data.items():
                 # Check if this is a nested section that should be flattened
-                if key.upper().replace(" ", "_") in [k.upper().replace(" ", "_") for k in nested_section_keys]:
-                    if isinstance(value, dict):
-                        # Recursively flatten nested sections
-                        flatten_and_merge(value, target)
-                    elif isinstance(value, list) and key.lower() in ["items", "services"]:
-                        # Keep items/services as arrays at top level
-                        if self._is_meaningful_value(value):
-                            target[key.lower()] = value
+                if is_nested_section(key) and isinstance(value, dict):
+                    # Recursively flatten nested sections - merge contents to top level
+                    flatten_and_merge(value, target)
+                elif isinstance(value, list) and key.lower() in ["items", "services"]:
+                    # Keep items/services as arrays at top level
+                    if self._is_meaningful_value(value):
+                        target["services"] = value  # Normalize to 'services' for quotes
+                        target["items"] = value     # Also keep as 'items' for invoices
+                elif isinstance(value, dict) and not is_nested_section(key):
+                    # Non-section dict, keep as is but also flatten if it has known fields
+                    target[self._normalize_field_key(key)] = value
                 elif self._is_meaningful_value(value):
                     # Normalize key to snake_case for consistency
                     normalized_key = self._normalize_field_key(key)
