@@ -49,7 +49,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 from api.routes import agent_router
 from services.semantic_kernel_service import SemanticKernelService
-from voice_services.semantic_kernel_service import SemanticKernelService as VoiceSemanticKernelService
 from database import connect_to_mongo, close_mongo_connection, is_connected, get_database
 
 # Load environment variables
@@ -57,13 +56,12 @@ load_dotenv()
 
 # Global service instances
 sk_service = None
-voice_sk_service = None
 # settings already loaded above for logging
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifespan events"""
-    global sk_service, voice_sk_service
+    global sk_service
     
     # Startup
     logger.info("[STARTUP] Starting Devia AI Agent System...")
@@ -78,14 +76,8 @@ async def lifespan(app: FastAPI):
         sk_service = SemanticKernelService(settings)
         await sk_service.initialize()
         
-        # Initialize Voice Semantic Kernel service
-        logger.info("[STARTUP] Initializing Voice AI Services...")
-        voice_sk_service = VoiceSemanticKernelService(settings)
-        await voice_sk_service.initialize()
-        
         # Store in app state for access in routes
         app.state.sk_service = sk_service
-        app.state.voice_sk_service = voice_sk_service
         
         logger.info("[STARTUP] All services initialized successfully!")
         logger.info("[STARTUP] Devia AI Agent System is ready to serve requests!")
@@ -103,10 +95,6 @@ async def lifespan(app: FastAPI):
         if sk_service:
             logger.info("🤖 Cleaning up AI services...")
             await sk_service.cleanup()
-        
-        if voice_sk_service:
-            logger.info("🎤 Cleaning up Voice AI services...")
-            await voice_sk_service.cleanup()
         
         # Close database connection
         logger.info("📊 Closing database connection...")
