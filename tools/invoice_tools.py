@@ -431,15 +431,31 @@ class InvoiceTools:
         description="Get all invoices with optional filtering and search",
         name="get_invoices"
     )
-    async def get_invoices(self, user_id: str, search: str = "", status_filter: str = "", client_id: str = "", skip: int = 0, limit: int = 100) -> str:
+    async def get_invoices(
+        self, 
+        user_id: str, 
+        search: str = "", 
+        status_filter: str = "", 
+        client_id: str = "", 
+        client_name: str = "",
+        invoice_type: str = "",
+        date_from: str = "",
+        date_to: str = "",
+        skip: int = 0, 
+        limit: int = 100
+    ) -> str:
         """
         Retrieve a list of invoices with optional filtering
         
         Args:
             user_id: User ID (required for security)
-            search: Optional search text to filter by invoice number or client ID
+            search: Optional search text to filter by invoice number, title, project name
             status_filter: Filter by status: draft, sent, paid, overdue, cancelled
             client_id: Filter by client ID
+            client_name: Filter by client name (partial match)
+            invoice_type: Filter by invoice type: deposit, progress, final
+            date_from: Filter invoices created on or after this date (ISO format)
+            date_to: Filter invoices created on or before this date (ISO format)
             skip: Number of invoices to skip
             limit: Maximum number of invoices to return
             
@@ -449,32 +465,70 @@ class InvoiceTools:
         try:
             from database import get_invoices_collection
             from bson import ObjectId
+            import re
+            from dateutil.parser import parse as parse_date
             
             invoices_collection = get_invoices_collection()
             query_dict = {}
+            or_conditions = []
 
-            # Add search filter
+            # Add general search filter - search across multiple fields
             if search:
-                import re
                 regex = re.compile(re.escape(search), re.IGNORECASE)
-                query_dict["$or"] = [
+                or_conditions.extend([
                     {"number": {"$regex": regex}},
-                    {"clientId": {"$regex": regex}}
-                ]
+                    {"title": {"$regex": regex}},
+                    {"projectName": {"$regex": regex}},
+                    {"clientName": {"$regex": regex}},
+                    {"clientEmail": {"$regex": regex}},
+                    {"notes": {"$regex": regex}}
+                ])
+
+            # Add client name filter (separate from general search for more targeted queries)
+            if client_name:
+                client_regex = re.compile(re.escape(client_name), re.IGNORECASE)
+                or_conditions.append({"clientName": {"$regex": client_regex}})
+
+            # Combine OR conditions if any exist
+            if or_conditions:
+                query_dict["$or"] = or_conditions
 
             # Add status filter
             if status_filter:
                 valid_statuses = ["draft", "sent", "paid", "overdue", "cancelled"]
-                if status_filter not in valid_statuses:
-                    return json.dumps({"error": f"Invalid status filter: {status_filter}"})
-                query_dict["status"] = status_filter
+                if status_filter.lower() in valid_statuses:
+                    query_dict["status"] = status_filter.lower()
+
+            # Add invoice type filter
+            if invoice_type:
+                valid_types = ["deposit", "progress", "final"]
+                if invoice_type.lower() in valid_types:
+                    query_dict["invoiceType"] = invoice_type.lower()
 
             # Add client ID filter
             if client_id:
                 query_dict["clientId"] = client_id
 
+            # Add date range filter
+            if date_from or date_to:
+                date_filter = {}
+                if date_from:
+                    try:
+                        date_filter["$gte"] = parse_date(date_from)
+                    except:
+                        pass
+                if date_to:
+                    try:
+                        date_filter["$lte"] = parse_date(date_to)
+                    except:
+                        pass
+                if date_filter:
+                    query_dict["createdAt"] = date_filter
+
             # Add user ID filter (required for security)
             query_dict["userId"] = user_id
+
+            print(f"[DEBUG] Invoice query: {query_dict}")
 
             # Get total count
             total = await invoices_collection.count_documents(query_dict)

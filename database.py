@@ -118,3 +118,7 @@ def get_meetings_collection():
 
 def get_manual_tasks_collection():
     return db.database.manual_tasks
+
+def get_conversations_collection():
+    """Get conversations collection for AI agent chat history"""
+    return db.database.conversations

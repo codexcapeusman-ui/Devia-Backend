@@ -386,15 +386,29 @@ class QuoteTools:
         description="Get all quotes with optional filtering and search",
         name="get_quotes"
     )
-    async def get_quotes(self, user_id: str, search: str = "", status_filter: str = "", client_id: str = "", skip: int = 0, limit: int = 100) -> str:
+    async def get_quotes(
+        self, 
+        user_id: str, 
+        search: str = "", 
+        status_filter: str = "", 
+        client_id: str = "", 
+        client_name: str = "",
+        date_from: str = "",
+        date_to: str = "",
+        skip: int = 0, 
+        limit: int = 100
+    ) -> str:
         """
         Retrieve a list of quotes with optional filtering
         
         Args:
             user_id: User ID (required for security)
-            search: Optional search text to filter by quote number or client ID
+            search: Optional search text to filter by quote number, title, project name
             status_filter: Filter by status: draft, sent, accepted, rejected, expired
             client_id: Filter by client ID
+            client_name: Filter by client name (partial match)
+            date_from: Filter quotes created on or after this date (ISO format)
+            date_to: Filter quotes created on or before this date (ISO format)
             skip: Number of quotes to skip
             limit: Maximum number of quotes to return
             
@@ -406,29 +420,60 @@ class QuoteTools:
             from database import get_quotes_collection, is_connected
             print(f"[DEBUG] QuoteTools.get_quotes() - Database connected: {is_connected()}")
             from bson import ObjectId
+            import re
+            from dateutil.parser import parse as parse_date
             
             quotes_collection = get_quotes_collection()
             query_dict = {}
+            or_conditions = []
 
-            # Add search filter
+            # Add general search filter - search across multiple fields
             if search:
-                import re
                 regex = re.compile(re.escape(search), re.IGNORECASE)
-                query_dict["$or"] = [
+                or_conditions.extend([
                     {"number": {"$regex": regex}},
-                    {"clientId": {"$regex": regex}}
-                ]
+                    {"title": {"$regex": regex}},
+                    {"projectName": {"$regex": regex}},
+                    {"clientName": {"$regex": regex}},
+                    {"clientEmail": {"$regex": regex}},
+                    {"internalNotes": {"$regex": regex}},
+                    {"publicNotes": {"$regex": regex}}
+                ])
+
+            # Add client name filter (separate from general search for more targeted queries)
+            if client_name:
+                client_regex = re.compile(re.escape(client_name), re.IGNORECASE)
+                or_conditions.append({"clientName": {"$regex": client_regex}})
+
+            # Combine OR conditions if any exist
+            if or_conditions:
+                query_dict["$or"] = or_conditions
 
             # Add status filter
             if status_filter:
                 valid_statuses = ["draft", "sent", "accepted", "rejected", "expired"]
-                if status_filter not in valid_statuses:
-                    return json.dumps({"error": f"Invalid status filter: {status_filter}"})
-                query_dict["status"] = status_filter
+                if status_filter.lower() in valid_statuses:
+                    query_dict["status"] = status_filter.lower()
 
             # Add client ID filter
             if client_id:
                 query_dict["clientId"] = client_id
+
+            # Add date range filter
+            if date_from or date_to:
+                date_filter = {}
+                if date_from:
+                    try:
+                        date_filter["$gte"] = parse_date(date_from)
+                    except:
+                        pass
+                if date_to:
+                    try:
+                        date_filter["$lte"] = parse_date(date_to)
+                    except:
+                        pass
+                if date_filter:
+                    query_dict["createdAt"] = date_filter
 
             # Add user ID filter (required for security)
             query_dict["userId"] = user_id

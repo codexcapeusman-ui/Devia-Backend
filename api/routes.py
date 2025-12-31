@@ -3,10 +3,10 @@ FastAPI routes for unified AI agent interactions
 Provides single endpoint for all AI agent operations with intelligent routing
 """
 
-from fastapi import APIRouter, HTTPException, Depends, Request, status
+from fastapi import APIRouter, HTTPException, Depends, Request, status, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import logging
 import json
 import os
@@ -14,7 +14,7 @@ import sys
 
 # Import the text-based services (with our improvements)
 from services.semantic_kernel_service import SemanticKernelService
-from services.unified_agent_service import UnifiedAgentService
+from services.unified_agent_service_v2 import UnifiedAgentService  # Using refactored v2
 from auth.dependencies import get_current_user_id_dependency
 from auth.jwt_auth import get_current_user_id
 
@@ -104,10 +104,12 @@ async def process_agent_request(
         logger.info(f"Processing unified agent request for user {user_id}: {request.prompt[:100]}...")
         
         # Process the request through unified agent
+        # Context is optional - enhances extraction if provided (e.g., pre-selected client_id, quote_id)
         result = await unified_service.process_agent_request(
             prompt=request.prompt,
             user_id=user_id,
-            language=request.language
+            language=request.language,
+            context=request.context if request.context else None
         )
         
         return result
@@ -242,3 +244,102 @@ async def test_unified_agent(
     except Exception as e:
         logger.error(f"Test request failed: {e}")
         raise HTTPException(status_code=500, detail=f"Test failed: {str(e)}")
+
+
+# ==================== CHAT HISTORY ENDPOINTS ====================
+
+@agent_router.get("/conversations")
+async def get_user_conversations(
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(20, ge=1, le=100, description="Items per page"),
+    unified_service: UnifiedAgentService = Depends(get_unified_agent_service),
+    user_id: str = Depends(get_current_user_id_dependency)
+):
+    """
+    Get paginated list of user's conversation history
+    
+    Returns:
+    - List of conversations with metadata (intent, state, message count)
+    - Pagination info (total, page, page_size, has_more)
+    """
+    try:
+        result = await unified_service.get_user_conversations(
+            user_id=user_id,
+            page=page,
+            page_size=page_size
+        )
+        return {
+            "success": True,
+            "data": result
+        }
+    except Exception as e:
+        logger.error(f"Failed to get conversations: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get conversations: {str(e)}")
+
+
+@agent_router.get("/conversations/{conversation_id}")
+async def get_conversation_detail(
+    conversation_id: str,
+    unified_service: UnifiedAgentService = Depends(get_unified_agent_service),
+    user_id: str = Depends(get_current_user_id_dependency)
+):
+    """
+    Get detailed conversation by ID including all messages
+    
+    Returns:
+    - Full conversation with all messages and extracted data
+    """
+    try:
+        result = await unified_service.get_conversation_by_id(
+            conversation_id=conversation_id,
+            user_id=user_id
+        )
+        
+        if not result:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        
+        return {
+            "success": True,
+            "data": result
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get conversation {conversation_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get conversation: {str(e)}")
+
+
+@agent_router.get("/conversations/{conversation_id}/messages")
+async def get_conversation_messages(
+    conversation_id: str,
+    unified_service: UnifiedAgentService = Depends(get_unified_agent_service),
+    user_id: str = Depends(get_current_user_id_dependency)
+):
+    """
+    Get only the messages from a specific conversation
+    
+    Returns:
+    - List of messages with role, content, and timestamp
+    """
+    try:
+        result = await unified_service.get_conversation_by_id(
+            conversation_id=conversation_id,
+            user_id=user_id
+        )
+        
+        if not result:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        
+        return {
+            "success": True,
+            "data": {
+                "conversation_id": conversation_id,
+                "messages": result.get("messages", []),
+                "message_count": len(result.get("messages", []))
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get messages for conversation {conversation_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get messages: {str(e)}")

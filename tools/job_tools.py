@@ -374,58 +374,102 @@ class JobTools:
     )
     async def get_jobs(self, 
                 user_id: str,
+                search: str = "",
+                status_filter: str = "",
+                client_name: str = "",
                 skip: int = 0, 
                 limit: int = 100, 
                 client_id: Optional[str] = None,
                 assigned_to: Optional[str] = None,
-                status: Optional[str] = None,
-                start_date: Optional[str] = None,
-                end_date: Optional[str] = None) -> str:
+                date_from: Optional[str] = None,
+                date_to: Optional[str] = None) -> str:
         """
         Retrieve jobs from database with filtering
         
         Args:
             user_id: User ID (required for security)
+            search: Optional search text to filter by title, description, or location
+            status_filter: Filter by job status (scheduled, in_progress, completed, cancelled)
+            client_name: Filter by client name (used to find matching client IDs)
             skip: Number of jobs to skip for pagination
             limit: Maximum number of jobs to return
             client_id: Filter by client ID
             assigned_to: Filter by assigned user ID
-            status: Filter by job status (scheduled, in_progress, completed, cancelled)
-            start_date: Filter jobs starting from this date (ISO format)
-            end_date: Filter jobs ending before this date (ISO format)
+            date_from: Filter jobs starting from this date (ISO format)
+            date_to: Filter jobs ending before this date (ISO format)
             
         Returns:
             JSON string containing actual jobs data from database
         """
         try:
             # Run async function in sync context
-            return await self._get_jobs_async(skip, limit, user_id, client_id, assigned_to, status, start_date, end_date)
+            return await self._get_jobs_async(skip, limit, user_id, search, status_filter, client_name, client_id, assigned_to, date_from, date_to)
         except Exception as e:
             return json.dumps({"error": f"Failed to get jobs: {str(e)}", "jobs": [], "total": 0})
 
-    async def _get_jobs_async(self, skip, limit, user_id, client_id, assigned_to, status, start_date, end_date):
+    async def _get_jobs_async(self, skip, limit, user_id, search="", status_filter="", client_name="", client_id=None, assigned_to=None, date_from=None, date_to=None):
         """Async implementation for getting jobs"""
         try:
+            import re
+            from dateutil.parser import parse as parse_date
+            
             jobs_collection = get_jobs_collection()
+            clients_collection = get_clients_collection()
             
             # Build query filter
             query = {"userId": user_id}
+            
+            # Add search filter - search across multiple fields
+            if search:
+                regex = re.compile(re.escape(search), re.IGNORECASE)
+                query["$or"] = [
+                    {"title": {"$regex": regex}},
+                    {"description": {"$regex": regex}},
+                    {"location": {"$regex": regex}}
+                ]
+            
+            # Handle client name search by finding matching client IDs first
+            if client_name:
+                client_regex = re.compile(re.escape(client_name), re.IGNORECASE)
+                matching_clients = await clients_collection.find(
+                    {"userId": user_id, "name": {"$regex": client_regex}}
+                ).to_list(length=100)
+                matching_client_ids = [str(c["_id"]) for c in matching_clients]
+                if matching_client_ids:
+                    if "$or" in query:
+                        # Add to existing OR conditions
+                        query["$or"].append({"clientId": {"$in": matching_client_ids}})
+                    else:
+                        query["clientId"] = {"$in": matching_client_ids}
             
             if client_id:
                 query["clientId"] = client_id
             if assigned_to:
                 query["assignedTo"] = assigned_to
-            if status:
-                query["status"] = status
+            
+            # Status filter
+            if status_filter:
+                valid_statuses = ["scheduled", "in_progress", "completed", "cancelled"]
+                if status_filter.lower() in valid_statuses:
+                    query["status"] = status_filter.lower()
             
             # Date range filtering
-            if start_date or end_date:
+            if date_from or date_to:
                 date_filter = {}
-                if start_date:
-                    date_filter["$gte"] = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
-                if end_date:
-                    date_filter["$lte"] = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
-                query["startTime"] = date_filter
+                if date_from:
+                    try:
+                        date_filter["$gte"] = parse_date(date_from)
+                    except:
+                        pass
+                if date_to:
+                    try:
+                        date_filter["$lte"] = parse_date(date_to)
+                    except:
+                        pass
+                if date_filter:
+                    query["startTime"] = date_filter
+            
+            print(f"[DEBUG] Job query: {query}")
             
             # Get total count for pagination
             total = await jobs_collection.count_documents(query)

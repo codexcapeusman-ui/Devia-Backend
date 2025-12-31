@@ -184,13 +184,20 @@ class ClientTools:
         description="Get all clients with optional filtering and search",
         name="get_clients"
     )
-    async def get_clients(self, user_id: str, search: str = "", status_filter: str = "", skip: int = 0, limit: int = 100) -> str:
+    async def get_clients(
+        self, 
+        user_id: str, 
+        search: str = "", 
+        status_filter: str = "", 
+        skip: int = 0, 
+        limit: int = 100
+    ) -> str:
         """
         Retrieve a list of clients with optional filtering
         
         Args:
             user_id: User ID (required for security)
-            search: Optional search text to filter by name, email, or company
+            search: Optional search text to filter by name, email, phone, company, or address
             status_filter: Filter by status: active, delinquent, archived
             skip: Number of clients to skip
             limit: Maximum number of clients to return
@@ -201,9 +208,30 @@ class ClientTools:
         try:
             from database import get_clients_collection
             from bson import ObjectId
+            import re
             
             clients_collection = get_clients_collection()
             query_dict = {"userId": user_id}  # Always filter by user_id for security
+
+            # Add search filter - search across multiple fields
+            if search:
+                regex = re.compile(re.escape(search), re.IGNORECASE)
+                query_dict["$or"] = [
+                    {"name": {"$regex": regex}},
+                    {"email": {"$regex": regex}},
+                    {"phone": {"$regex": regex}},
+                    {"company": {"$regex": regex}},
+                    {"address": {"$regex": regex}},
+                    {"notes": {"$regex": regex}}
+                ]
+
+            # Add status filter
+            if status_filter:
+                valid_statuses = ["active", "delinquent", "archived"]
+                if status_filter.lower() in valid_statuses:
+                    query_dict["status"] = status_filter.lower()
+
+            print(f"[DEBUG] Client query: {query_dict}")
 
             # Get total count
             total = await clients_collection.count_documents(query_dict)

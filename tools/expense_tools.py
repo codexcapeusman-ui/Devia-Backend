@@ -186,16 +186,25 @@ class ExpenseTools:
         description="Get all expenses with optional filtering and search",
         name="get_expenses"
     )
-    async def get_expenses(self, search: str = "", category_filter: str = "", start_date: str = "", end_date: str = "", user_id: Optional[str] = None, skip: int = 0, limit: int = 100) -> str:
+    async def get_expenses(
+        self, 
+        user_id: str,
+        search: str = "", 
+        category_filter: str = "", 
+        date_from: str = "", 
+        date_to: str = "", 
+        skip: int = 0, 
+        limit: int = 100
+    ) -> str:
         """
         Retrieve a list of expenses with optional filtering
         
         Args:
-            search: Optional search text to filter by description
+            user_id: User ID (required for security)
+            search: Optional search text to filter by description or notes
             category_filter: Filter by category (Materials, Transport, Equipment, etc.)
-            start_date: Filter expenses from this date (YYYY-MM-DD format)
-            end_date: Filter expenses until this date (YYYY-MM-DD format)
-            user_id: Filter by user ID (required for security)
+            date_from: Filter expenses from this date (ISO format)
+            date_to: Filter expenses until this date (ISO format)
             skip: Number of expenses to skip
             limit: Maximum number of expenses to return
             
@@ -205,43 +214,50 @@ class ExpenseTools:
         try:
             from database import get_expenses_collection
             from bson import ObjectId
+            import re
+            from dateutil.parser import parse as parse_date
             
             expenses_collection = get_expenses_collection()
-            query_dict = {}
+            query_dict = {"userId": user_id}  # Always filter by user_id for security
 
-            # Add search filter
+            # Add search filter - search across multiple fields
             if search:
-                import re
                 regex = re.compile(re.escape(search), re.IGNORECASE)
-                query_dict["description"] = {"$regex": regex}
+                query_dict["$or"] = [
+                    {"description": {"$regex": regex}},
+                    {"notes": {"$regex": regex}},
+                    {"category": {"$regex": regex}}
+                ]
 
             # Add category filter
             if category_filter:
                 valid_categories = [category.value for category in ExpenseCategory]
-                if category_filter not in valid_categories:
-                    return json.dumps({"error": f"Invalid category filter: {category_filter}"})
-                query_dict["category"] = category_filter
+                # Case-insensitive matching
+                matched_category = None
+                for cat in valid_categories:
+                    if cat.lower() == category_filter.lower():
+                        matched_category = cat
+                        break
+                if matched_category:
+                    query_dict["category"] = matched_category
 
             # Add date range filter
-            if start_date or end_date:
+            if date_from or date_to:
                 date_filter = {}
-                if start_date:
+                if date_from:
                     try:
-                        start_dt = datetime.fromisoformat(start_date)
-                        date_filter["$gte"] = start_dt
-                    except ValueError:
-                        return json.dumps({"error": "Invalid start_date format. Use YYYY-MM-DD"})
-                if end_date:
+                        date_filter["$gte"] = parse_date(date_from)
+                    except:
+                        pass
+                if date_to:
                     try:
-                        end_dt = datetime.fromisoformat(end_date)
-                        date_filter["$lte"] = end_dt
-                    except ValueError:
-                        return json.dumps({"error": "Invalid end_date format. Use YYYY-MM-DD"})
-                query_dict["date"] = date_filter
+                        date_filter["$lte"] = parse_date(date_to)
+                    except:
+                        pass
+                if date_filter:
+                    query_dict["date"] = date_filter
 
-            # Add user ID filter
-            if user_id:
-                query_dict["userId"] = user_id
+            print(f"[DEBUG] Expense query: {query_dict}")
 
             # Get total count
             total = await expenses_collection.count_documents(query_dict)

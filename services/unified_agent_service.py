@@ -11,6 +11,8 @@ from typing import Dict, Any, Optional, List, Tuple
 from datetime import datetime
 from enum import Enum
 
+from semantic_kernel.connectors.ai.open_ai.prompt_execution_settings.open_ai_prompt_execution_settings import OpenAIChatPromptExecutionSettings
+
 from services.semantic_kernel_service import SemanticKernelService
 from tools.client_tools import ClientTools
 from tools.invoice_tools import InvoiceTools
@@ -510,13 +512,9 @@ class UnifiedAgentService:
         if self._is_specific_id_query(prompt, intent):
             return self._extract_id_from_prompt(prompt, intent)
         
-        # For GET operations, we don't need to extract data beyond IDs
+        # For GET operations, extract search/filter parameters
         if operation == Operation.GET:
-            return {
-                "extracted_data": {},
-                "confidence": 1.0,
-                "missing_fields": []
-            }
+            return await self._extract_get_query_params(prompt, intent, language)
         extraction_prompts = {
             Intent.INVOICE: """
             Extract comprehensive invoice data from this prompt. Return JSON with these fields:
@@ -887,6 +885,205 @@ class UnifiedAgentService:
         
         return True
     
+    async def _extract_get_query_params(self, prompt: str, intent: Intent, language: str) -> Dict[str, Any]:
+        """
+        Extract search and filter parameters from GET operation prompts.
+        Uses LLM to intelligently extract client names, status filters, date ranges, etc.
+        """
+        try:
+            # Define extraction prompts based on intent
+            extraction_prompt = self._get_extraction_prompt_for_get(intent)
+            
+            system_prompt = f"""You are a data extraction assistant. Extract search and filter parameters from the user's query.
+            
+{extraction_prompt}
+
+IMPORTANT RULES:
+- Only extract values explicitly mentioned in the prompt
+- For client/customer names, extract the exact name mentioned
+- For status filters, map to valid status values
+- Return null/empty for fields not mentioned
+- Be precise - don't infer or assume values not in the prompt
+
+Return ONLY valid JSON, no explanations."""
+
+            user_prompt = f"Extract search parameters from: \"{prompt}\""
+            
+            result = await self.sk_service.kernel.invoke_prompt(
+                user_prompt,
+                system_message=system_prompt,
+                settings=OpenAIChatPromptExecutionSettings(
+                    max_tokens=500,
+                    temperature=0.1
+                )
+            )
+            
+            response_text = str(result).strip()
+            
+            # Parse JSON response
+            if "```json" in response_text:
+                response_text = response_text.split("```json")[1].split("```")[0].strip()
+            elif "```" in response_text:
+                response_text = response_text.split("```")[1].split("```")[0].strip()
+            
+            extracted_data = json.loads(response_text)
+            
+            # Clean up null/empty values
+            cleaned_data = {k: v for k, v in extracted_data.items() if v is not None and v != "" and v != []}
+            
+            self.logger.info(f"Extracted GET query params: {cleaned_data}")
+            
+            return {
+                "extracted_data": cleaned_data,
+                "confidence": 0.9 if cleaned_data else 0.5,
+                "missing_fields": []
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Error extracting GET query params: {e}")
+            return {
+                "extracted_data": {},
+                "confidence": 0.5,
+                "missing_fields": []
+            }
+    
+    def _get_extraction_prompt_for_get(self, intent: Intent) -> str:
+        """Get the extraction prompt for GET operations based on intent"""
+        
+        prompts = {
+            Intent.INVOICE: """Extract these fields for invoice search:
+- client_name: Name of the client/customer to filter by (string or null)
+- client_email: Email of the client to filter by (string or null)
+- status: Invoice status filter (one of: draft, sent, paid, overdue, cancelled, or null)
+- invoice_type: Type filter (one of: deposit, progress, final, or null)
+- project_name: Project name to search for (string or null)
+- title: Invoice title to search for (string or null)
+- date_from: Start date for filtering (ISO format or null)
+- date_to: End date for filtering (ISO format or null)
+- search_term: General search term if no specific field identified (string or null)
+
+Return JSON: {"client_name": ..., "client_email": ..., "status": ..., "invoice_type": ..., "project_name": ..., "title": ..., "date_from": ..., "date_to": ..., "search_term": ...}""",
+
+            Intent.QUOTE: """Extract these fields for quote search:
+- client_name: Name of the client/customer to filter by (string or null)
+- client_email: Email of the client to filter by (string or null)
+- status: Quote status filter (one of: draft, sent, accepted, rejected, expired, or null)
+- project_name: Project name to search for (string or null)
+- title: Quote title to search for (string or null)
+- date_from: Start date for filtering (ISO format or null)
+- date_to: End date for filtering (ISO format or null)
+- search_term: General search term if no specific field identified (string or null)
+
+Return JSON: {"client_name": ..., "client_email": ..., "status": ..., "project_name": ..., "title": ..., "date_from": ..., "date_to": ..., "search_term": ...}""",
+
+            Intent.CUSTOMER: """Extract these fields for client/customer search:
+- name: Name of the client to search for (string or null)
+- email: Email to search for (string or null)
+- phone: Phone number to search for (string or null)
+- company: Company name to search for (string or null)
+- status: Client status filter (one of: active, delinquent, archived, or null)
+- search_term: General search term if no specific field identified (string or null)
+
+Return JSON: {"name": ..., "email": ..., "phone": ..., "company": ..., "status": ..., "search_term": ...}""",
+
+            Intent.EXPENSE: """Extract these fields for expense search:
+- description: Description to search for (string or null)
+- category: Category filter (one of: Materials, Transport, Equipment, Labor, Insurance, General, Training, Marketing, Others, or null)
+- amount_min: Minimum amount filter (number or null)
+- amount_max: Maximum amount filter (number or null)
+- date_from: Start date for filtering (ISO format or null)
+- date_to: End date for filtering (ISO format or null)
+- search_term: General search term if no specific field identified (string or null)
+
+Return JSON: {"description": ..., "category": ..., "amount_min": ..., "amount_max": ..., "date_from": ..., "date_to": ..., "search_term": ...}""",
+
+            Intent.JOB: """Extract these fields for job search:
+- title: Job title to search for (string or null)
+- client_name: Client name to filter by (string or null)
+- location: Location to search for (string or null)
+- status: Job status filter (one of: scheduled, in_progress, completed, cancelled, or null)
+- date_from: Start date for filtering (ISO format or null)
+- date_to: End date for filtering (ISO format or null)
+- search_term: General search term if no specific field identified (string or null)
+
+Return JSON: {"title": ..., "client_name": ..., "location": ..., "status": ..., "date_from": ..., "date_to": ..., "search_term": ...}""",
+
+            Intent.MANUAL_TASK: """Extract these fields for manual task search:
+- title: Task title to search for (string or null)
+- location: Location to search for (string or null)
+- color: Color filter (string or null)
+- date_from: Start date for filtering (ISO format or null)
+- date_to: End date for filtering (ISO format or null)
+- search_term: General search term if no specific field identified (string or null)
+
+Return JSON: {"title": ..., "location": ..., "color": ..., "date_from": ..., "date_to": ..., "search_term": ...}"""
+        }
+        
+        return prompts.get(intent, """Extract any search parameters mentioned:
+- search_term: General search term (string or null)
+Return JSON: {"search_term": ...}""")
+    
+    def _build_search_params(self, intent: Intent, data: Dict[str, Any]) -> Dict[str, str]:
+        """
+        Build search parameters dictionary from extracted data for GET operations.
+        Maps extracted fields to tool method parameters.
+        """
+        params = {}
+        
+        # Common search term - use search_term, title, or other text fields as general search
+        search_fields = ["search_term", "title", "description", "project_name"]
+        for field in search_fields:
+            if data.get(field):
+                params["search"] = str(data[field])
+                break
+        
+        # Client name (for invoices, quotes, jobs)
+        if data.get("client_name"):
+            params["client_name"] = str(data["client_name"])
+        elif data.get("name") and intent == Intent.CUSTOMER:
+            params["search"] = str(data["name"])
+        
+        # Status filter
+        if data.get("status"):
+            params["status"] = str(data["status"]).lower()
+        
+        # Invoice type (specific to invoices)
+        if data.get("invoice_type"):
+            params["invoice_type"] = str(data["invoice_type"]).lower()
+        
+        # Category (for expenses)
+        if data.get("category"):
+            params["category"] = str(data["category"])
+        
+        # Color (for manual tasks)
+        if data.get("color"):
+            params["color"] = str(data["color"])
+        
+        # Date range
+        if data.get("date_from"):
+            params["date_from"] = str(data["date_from"])
+        if data.get("date_to"):
+            params["date_to"] = str(data["date_to"])
+        
+        # Email and phone for client search
+        if data.get("email"):
+            if not params.get("search"):
+                params["search"] = str(data["email"])
+        if data.get("phone"):
+            if not params.get("search"):
+                params["search"] = str(data["phone"])
+        if data.get("company"):
+            if not params.get("search"):
+                params["search"] = str(data["company"])
+        
+        # Location (for jobs/tasks)
+        if data.get("location"):
+            if not params.get("search"):
+                params["search"] = str(data["location"])
+        
+        self.logger.debug(f"Built search params for {intent.value}: {params}")
+        return params
+    
     def _check_missing_data(self, intent: Intent, operation: Operation, data: Dict[str, Any]) -> List[str]:
         """
         Check which required fields are missing for the given intent
@@ -990,19 +1187,61 @@ class UnifiedAgentService:
                             "data": None
                         }
                 else:
-                    # Handle general list queries
+                    # Handle general list queries with search/filter parameters
+                    # Extract search params from the data dict
+                    search_params = self._build_search_params(intent, data)
+                    self.logger.info(f"GET query with search params: {search_params}")
+                    
                     if intent == Intent.JOB:
-                        result = await self.job_tools.get_jobs(user_id=user_id)
+                        result = await self.job_tools.get_jobs(
+                            user_id=user_id,
+                            search=search_params.get("search", ""),
+                            status_filter=search_params.get("status", ""),
+                            client_name=search_params.get("client_name", ""),
+                            date_from=search_params.get("date_from", ""),
+                            date_to=search_params.get("date_to", "")
+                        )
                     elif intent == Intent.CUSTOMER:
-                        result = await self.client_tools.get_clients(user_id=user_id)
+                        result = await self.client_tools.get_clients(
+                            user_id=user_id,
+                            search=search_params.get("search", ""),
+                            status_filter=search_params.get("status", "")
+                        )
                     elif intent == Intent.EXPENSE:
-                        result = await self.expense_tools.get_expenses(user_id=user_id)
+                        result = await self.expense_tools.get_expenses(
+                            user_id=user_id,
+                            search=search_params.get("search", ""),
+                            category_filter=search_params.get("category", ""),
+                            date_from=search_params.get("date_from", ""),
+                            date_to=search_params.get("date_to", "")
+                        )
                     elif intent == Intent.INVOICE:
-                        result = await self.invoice_tools.get_invoices(user_id=user_id)
+                        result = await self.invoice_tools.get_invoices(
+                            user_id=user_id,
+                            search=search_params.get("search", ""),
+                            status_filter=search_params.get("status", ""),
+                            client_name=search_params.get("client_name", ""),
+                            invoice_type=search_params.get("invoice_type", ""),
+                            date_from=search_params.get("date_from", ""),
+                            date_to=search_params.get("date_to", "")
+                        )
                     elif intent == Intent.QUOTE:
-                        result = await self.quote_tools.get_quotes(user_id=user_id)
+                        result = await self.quote_tools.get_quotes(
+                            user_id=user_id,
+                            search=search_params.get("search", ""),
+                            status_filter=search_params.get("status", ""),
+                            client_name=search_params.get("client_name", ""),
+                            date_from=search_params.get("date_from", ""),
+                            date_to=search_params.get("date_to", "")
+                        )
                     elif intent == Intent.MANUAL_TASK:
-                        result = await self.manual_task_tools.get_manual_tasks(user_id=user_id)
+                        result = await self.manual_task_tools.get_manual_tasks(
+                            user_id=user_id,
+                            search=search_params.get("search", ""),
+                            color_filter=search_params.get("color", ""),
+                            date_from=search_params.get("date_from", ""),
+                            date_to=search_params.get("date_to", "")
+                        )
                     else:
                         return {
                             "success": False,

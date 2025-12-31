@@ -1,0 +1,1274 @@
+"""
+Unified AI Agent Service - Refactored Version
+Handles single prompt workflow with intent detection, data extraction, and response formatting
+Now with database-backed conversations, per-field attempt tracking, and improved accuracy
+"""
+
+import json
+import logging
+import re
+import uuid
+from typing import Dict, Any, Optional, List, Tuple
+from datetime import datetime
+from enum import Enum
+from bson import ObjectId
+
+from semantic_kernel.connectors.ai.open_ai.prompt_execution_settings.open_ai_prompt_execution_settings import OpenAIChatPromptExecutionSettings
+
+from services.semantic_kernel_service import SemanticKernelService
+from tools.client_tools import ClientTools
+from tools.invoice_tools import InvoiceTools
+from tools.quote_tools import QuoteTools
+from tools.job_tools import JobTools
+from tools.expense_tools import ExpenseTools
+from tools.manual_task_tools import ManualTaskTools
+from config.settings import Settings
+from database import get_conversations_collection
+from models.chats import (
+    ChatMessage, Conversation, ConversationCreate, 
+    MessageRole, ConversationState as DBConversationState
+)
+
+
+class Intent(str, Enum):
+    """Supported intents for AI agent - Order matters for priority"""
+    CHIT_CHAT = "chit_chat"
+    MANUAL_TASK = "manual_task"
+    CUSTOMER = "customer"
+    INVOICE = "invoice"
+    QUOTE = "quote"
+    EXPENSE = "expense"
+    JOB = "job"
+    UNKNOWN = "unknown"
+
+
+class Operation(str, Enum):
+    """Supported operations for AI agent"""
+    GET = "get"
+    CREATE = "create"
+    UPDATE = "update"
+    DELETE = "delete"
+    UNKNOWN = "unknown"
+
+
+class ConversationState(str, Enum):
+    """States of conversation flow"""
+    INTENT_DETECTION = "intent_detection"
+    DATA_EXTRACTION = "data_extraction"
+    DATA_COMPLETION = "data_completion"
+    RESPONSE_GENERATION = "response_generation"
+    COMPLETED = "completed"
+
+
+# Maximum attempts per field before filling with N/A
+MAX_FIELD_ATTEMPTS = 2
+
+# Minimum confidence for auto-switching intents
+INTENT_SWITCH_CONFIDENCE = 0.7
+
+
+class UnifiedAgentService:
+    """
+    Unified service that handles all AI agent interactions through a single endpoint
+    Workflow: Prompt -> Intent Detection -> Data Extraction -> Missing Data Check -> Response
+    
+    Key improvements:
+    - Database-backed conversation storage
+    - Per-field attempt tracking (max 2 attempts per field)
+    - Intent switching at confidence >= 0.7
+    - Improved extraction accuracy with focused prompts
+    - Context parameter support
+    """
+    
+    def __init__(self, sk_service: SemanticKernelService, settings: Settings = None):
+        self.sk_service = sk_service
+        self.logger = logging.getLogger(__name__)
+        
+        # Initialize settings
+        if settings is None:
+            from config.settings import Settings
+            settings = Settings()
+        self.settings = settings
+        
+        # Initialize tools
+        self.client_tools = ClientTools(settings)
+        self.invoice_tools = InvoiceTools(settings)
+        self.quote_tools = QuoteTools(settings)
+        self.job_tools = JobTools(settings)
+        self.expense_tools = ExpenseTools(settings)
+        self.manual_task_tools = ManualTaskTools(settings)
+        
+        # In-memory cache for active conversations (backed by database)
+        self._conversation_cache: Dict[str, Dict] = {}
+        
+        # Required fields for each intent
+        self.required_fields = {
+            Intent.MANUAL_TASK: ["title", "start_time", "end_time"],
+            Intent.CUSTOMER: ["name", "email", "phone", "address"],
+            Intent.INVOICE: ["customer_name", "customer_email", "items", "total_amount", "title"],
+            Intent.QUOTE: ["customer_name", "customer_email", "services", "estimated_total"],
+            Intent.EXPENSE: ["description", "amount", "date", "category"],
+            Intent.JOB: ["title", "customer_name", "scheduled_date", "duration"]
+        }
+        
+        # Field aliases for smart matching
+        self.field_aliases = {
+            "customer_name": ["customer_name", "client_name", "clientName", "name", "clientname"],
+            "customer_email": ["customer_email", "client_email", "clientEmail", "email", "clientemail"],
+            "services": ["services", "items", "line_items", "lineItems", "service_items"],
+            "items": ["items", "services", "line_items", "lineItems", "invoice_items"],
+            "estimated_total": ["estimated_total", "estimatedTotal", "total", "total_amount", "totalAmount"],
+            "total_amount": ["total_amount", "totalAmount", "total", "estimated_total", "estimatedTotal"],
+            "title": ["title", "name", "project_name", "projectName", "description"],
+            "description": ["description", "title", "name"],
+            "amount": ["amount", "total", "total_amount", "totalAmount"],
+            "date": ["date", "expense_date", "expenseDate", "created_at", "createdAt"],
+            "category": ["category", "expense_category", "expenseCategory", "type"],
+            "name": ["name", "customer_name", "client_name", "clientName", "title"],
+            "email": ["email", "customer_email", "client_email", "clientEmail"],
+            "phone": ["phone", "phone_number", "phoneNumber", "telephone"],
+            "address": ["address", "full_address", "fullAddress", "street_address", "streetAddress"],
+            "start_time": ["start_time", "startTime", "start_date", "startDate", "scheduled_date"],
+            "end_time": ["end_time", "endTime", "end_date", "endDate"],
+            "scheduled_date": ["scheduled_date", "scheduledDate", "start_date", "startDate", "date"],
+            "duration": ["duration", "estimated_duration", "estimatedDuration", "hours"],
+        }
+
+    # ==================== DATABASE OPERATIONS ====================
+    
+    async def _get_or_create_conversation(self, user_id: str, language: str = "en", context: Optional[Dict] = None) -> Dict[str, Any]:
+        """Get active conversation from database or create new one"""
+        try:
+            collection = get_conversations_collection()
+            
+            # Find active conversation for user
+            existing = await collection.find_one({
+                "user_id": user_id,
+                "is_active": True
+            })
+            
+            if existing:
+                # Update cache and return
+                conversation = self._db_doc_to_conversation(existing)
+                self._conversation_cache[user_id] = conversation
+                return conversation
+            
+            # Create new conversation
+            new_conversation = {
+                "user_id": user_id,
+                "state": ConversationState.INTENT_DETECTION.value,
+                "intent": None,
+                "operation": None,
+                "confidence": 0.0,
+                "messages": [],
+                "extracted_data": context.get("extracted_data", {}) if context else {},
+                "field_attempts": {},
+                "language": language,
+                "context": context or {},
+                "created_at": datetime.utcnow(),
+                "updated_at": datetime.utcnow(),
+                "is_active": True
+            }
+            
+            result = await collection.insert_one(new_conversation)
+            new_conversation["_id"] = str(result.inserted_id)
+            
+            conversation = self._db_doc_to_conversation(new_conversation)
+            self._conversation_cache[user_id] = conversation
+            return conversation
+            
+        except Exception as e:
+            self.logger.error(f"Database error getting conversation: {e}")
+            # Fallback to in-memory only
+            return self._get_fallback_conversation(user_id, language, context)
+    
+    async def _save_conversation(self, user_id: str, conversation: Dict[str, Any]) -> None:
+        """Save conversation state to database"""
+        try:
+            collection = get_conversations_collection()
+            conversation["updated_at"] = datetime.utcnow()
+            
+            # Convert messages to dict format for storage
+            messages_for_db = []
+            for msg in conversation.get("messages", []):
+                if isinstance(msg, dict):
+                    messages_for_db.append(msg)
+                else:
+                    messages_for_db.append({
+                        "role": msg.role if hasattr(msg, 'role') else msg.get("role", "user"),
+                        "content": msg.content if hasattr(msg, 'content') else msg.get("content", ""),
+                        "timestamp": msg.timestamp.isoformat() if hasattr(msg, 'timestamp') else msg.get("timestamp", datetime.utcnow().isoformat())
+                    })
+            
+            update_data = {
+                "state": conversation["state"].value if isinstance(conversation["state"], ConversationState) else conversation["state"],
+                "intent": conversation.get("intent").value if isinstance(conversation.get("intent"), Intent) else conversation.get("intent"),
+                "operation": conversation.get("operation").value if isinstance(conversation.get("operation"), Operation) else conversation.get("operation"),
+                "confidence": conversation.get("confidence", 0.0),
+                "messages": messages_for_db,
+                "extracted_data": conversation.get("data", {}),
+                "field_attempts": conversation.get("field_attempts", {}),
+                "updated_at": datetime.utcnow(),
+                "is_active": conversation.get("is_active", True)
+            }
+            
+            if conversation.get("_id"):
+                await collection.update_one(
+                    {"_id": ObjectId(conversation["_id"])},
+                    {"$set": update_data}
+                )
+            else:
+                await collection.update_one(
+                    {"user_id": user_id, "is_active": True},
+                    {"$set": update_data}
+                )
+            
+            # Update cache
+            self._conversation_cache[user_id] = conversation
+            
+        except Exception as e:
+            self.logger.error(f"Database error saving conversation: {e}")
+    
+    async def _close_conversation(self, user_id: str) -> None:
+        """Mark conversation as completed/inactive in database"""
+        try:
+            collection = get_conversations_collection()
+            await collection.update_one(
+                {"user_id": user_id, "is_active": True},
+                {"$set": {"is_active": False, "state": "completed", "updated_at": datetime.utcnow()}}
+            )
+            
+            # Clear cache
+            if user_id in self._conversation_cache:
+                del self._conversation_cache[user_id]
+                
+        except Exception as e:
+            self.logger.error(f"Database error closing conversation: {e}")
+    
+    def _db_doc_to_conversation(self, doc: Dict) -> Dict[str, Any]:
+        """Convert database document to conversation dict"""
+        return {
+            "_id": str(doc.get("_id", "")),
+            "user_id": doc.get("user_id"),
+            "state": ConversationState(doc.get("state", "intent_detection")),
+            "intent": Intent(doc.get("intent")) if doc.get("intent") else None,
+            "operation": Operation(doc.get("operation")) if doc.get("operation") else None,
+            "confidence": doc.get("confidence", 0.0),
+            "messages": doc.get("messages", []),
+            "data": doc.get("extracted_data", {}),
+            "field_attempts": doc.get("field_attempts", {}),
+            "language": doc.get("language", "en"),
+            "context": doc.get("context", {}),
+            "created_at": doc.get("created_at", datetime.utcnow()),
+            "updated_at": doc.get("updated_at", datetime.utcnow()),
+            "is_active": doc.get("is_active", True)
+        }
+    
+    def _get_fallback_conversation(self, user_id: str, language: str, context: Optional[Dict]) -> Dict[str, Any]:
+        """Fallback in-memory conversation when database is unavailable"""
+        if user_id not in self._conversation_cache:
+            self._conversation_cache[user_id] = {
+                "user_id": user_id,
+                "state": ConversationState.INTENT_DETECTION,
+                "intent": None,
+                "operation": None,
+                "confidence": 0.0,
+                "messages": [],
+                "data": context.get("extracted_data", {}) if context else {},
+                "field_attempts": {},
+                "language": language,
+                "context": context or {},
+                "created_at": datetime.utcnow(),
+                "updated_at": datetime.utcnow(),
+                "is_active": True
+            }
+        return self._conversation_cache[user_id]
+
+    # ==================== MAIN PROCESSING ====================
+    
+    async def process_agent_request(
+        self, 
+        prompt: str, 
+        user_id: str, 
+        language: str = "en",
+        context: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Main entry point for unified agent processing
+        
+        Args:
+            prompt: User's natural language prompt
+            user_id: Unique identifier for the user
+            language: Language preference (en/fr)
+            context: Optional context data (client_id, quote_id, etc.)
+            
+        Returns:
+            Unified response with status, data, and next action
+        """
+        try:
+            self.logger.info(f"Processing unified request for user {user_id}: {prompt[:100]}...")
+            
+            # Get or create conversation state from database
+            conversation = await self._get_or_create_conversation(user_id, language, context)
+            self.logger.info(f"Conversation state: {conversation['state']}, field_attempts: {conversation.get('field_attempts', {})}")
+            
+            # Handle quick commands: reset/cancel
+            lower_prompt = prompt.strip().lower()
+            if any(cmd in lower_prompt for cmd in ["never mind", "cancel", "start over", "reset", "stop"]):
+                await self._close_conversation(user_id)
+                return {
+                    "success": True,
+                    "message": "Conversation reset. How can I help you now?",
+                    "action": "reset"
+                }
+
+            # Add user message to history
+            conversation["messages"].append({
+                "role": "user",
+                "content": prompt,
+                "timestamp": datetime.utcnow().isoformat()
+            })
+
+            # STEP 1: Intent Detection or Re-detection
+            if conversation["state"] == ConversationState.INTENT_DETECTION:
+                intent, operation, confidence = await self._detect_intent(prompt, language)
+                conversation["intent"] = intent
+                conversation["operation"] = operation
+                conversation["confidence"] = confidence
+                conversation["data"] = context.get("extracted_data", {}) if context else {}
+                conversation["field_attempts"] = {}
+
+                self.logger.info(f"Intent detection result: intent={intent}, operation={operation}, confidence={confidence}")
+
+                # Handle CHIT_CHAT
+                if intent == Intent.CHIT_CHAT:
+                    chit_chat_response = await self._generate_chit_chat_response(prompt, language)
+                    await self._close_conversation(user_id)
+                    return chit_chat_response
+
+                # Handle "get all" queries
+                if operation == Operation.GET and self._is_get_all_query(prompt):
+                    conversation["state"] = ConversationState.RESPONSE_GENERATION
+                elif intent == Intent.UNKNOWN or confidence < 0.1:
+                    await self._save_conversation(user_id, conversation)
+                    return self._create_clarification_response(conversation, language)
+                else:
+                    conversation["state"] = ConversationState.DATA_EXTRACTION
+            
+            else:
+                # Check for intent switch during data collection (auto-switch at >= 0.7)
+                new_intent, new_operation, new_confidence = await self._detect_intent(prompt, language)
+                
+                # Handle GET queries immediately
+                if new_operation == Operation.GET and self._is_get_all_query(prompt):
+                    self.logger.info(f"Detected 'get all' query, switching to {new_intent.value}")
+                    conversation["intent"] = new_intent
+                    conversation["operation"] = new_operation
+                    conversation["confidence"] = new_confidence
+                    conversation["data"] = {}
+                    conversation["field_attempts"] = {}
+                    conversation["state"] = ConversationState.RESPONSE_GENERATION
+                
+                # Auto-switch intent at confidence >= 0.7
+                elif new_intent != Intent.UNKNOWN and new_intent != conversation.get("intent") and new_confidence >= INTENT_SWITCH_CONFIDENCE:
+                    self.logger.info(f"Auto-switching intent from {conversation.get('intent')} to {new_intent} (confidence={new_confidence})")
+                    conversation["intent"] = new_intent
+                    conversation["operation"] = new_operation
+                    conversation["confidence"] = new_confidence
+                    conversation["data"] = {}
+                    conversation["field_attempts"] = {}
+                    conversation["state"] = ConversationState.DATA_EXTRACTION
+
+            # STEP 2: Data Extraction
+            if conversation["state"] in [ConversationState.DATA_EXTRACTION, ConversationState.DATA_COMPLETION]:
+                extracted_data = await self._extract_data(
+                    prompt, 
+                    conversation["intent"], 
+                    conversation.get("operation", Operation.UNKNOWN), 
+                    language, 
+                    conversation["messages"],
+                    conversation.get("data", {})  # Pass existing data for cumulative extraction
+                )
+                
+                # Merge with existing data
+                self._merge_conversation_data(conversation["data"], extracted_data)
+                conversation["state"] = ConversationState.DATA_COMPLETION
+
+            # STEP 3: Check Missing Data with Per-Field Attempt Tracking
+            if conversation["state"] == ConversationState.DATA_COMPLETION:
+                missing_fields = self._check_missing_data(
+                    conversation["intent"], 
+                    conversation.get("operation", Operation.UNKNOWN), 
+                    conversation["data"]
+                )
+                
+                if missing_fields:
+                    # Filter fields that haven't exceeded max attempts
+                    fields_to_ask = []
+                    fields_to_fill_na = []
+                    
+                    for field in missing_fields:
+                        current_attempts = conversation.get("field_attempts", {}).get(field, 0)
+                        if current_attempts >= MAX_FIELD_ATTEMPTS:
+                            fields_to_fill_na.append(field)
+                        else:
+                            fields_to_ask.append(field)
+                            # Increment attempt counter for this field
+                            if "field_attempts" not in conversation:
+                                conversation["field_attempts"] = {}
+                            conversation["field_attempts"][field] = current_attempts + 1
+                    
+                    # Fill N/A for fields that exceeded attempts
+                    for field in fields_to_fill_na:
+                        self.logger.info(f"Max attempts reached for field '{field}', filling with N/A")
+                        if field in ["total_amount", "estimated_total", "amount"]:
+                            conversation["data"][field] = 0.0
+                        elif field in ["items", "services"]:
+                            conversation["data"][field] = []
+                        else:
+                            conversation["data"][field] = "N/A"
+                    
+                    # If there are still fields to ask about
+                    if fields_to_ask:
+                        await self._save_conversation(user_id, conversation)
+                        response = self._create_missing_data_response(conversation, fields_to_ask, language)
+                        conversation["messages"].append({
+                            "role": "assistant",
+                            "content": response["message"],
+                            "timestamp": datetime.utcnow().isoformat()
+                        })
+                        await self._save_conversation(user_id, conversation)
+                        return response
+                    else:
+                        # All fields either filled or N/A'd
+                        conversation["state"] = ConversationState.RESPONSE_GENERATION
+                else:
+                    conversation["state"] = ConversationState.RESPONSE_GENERATION
+
+            # STEP 4: Generate Final Response
+            if conversation["state"] == ConversationState.RESPONSE_GENERATION:
+                response = await self._generate_final_response(
+                    conversation["intent"], 
+                    conversation.get("operation", Operation.UNKNOWN), 
+                    conversation["data"], 
+                    language, 
+                    user_id
+                )
+                
+                # Add response to history and close conversation
+                conversation["messages"].append({
+                    "role": "assistant",
+                    "content": response.get("message", ""),
+                    "timestamp": datetime.utcnow().isoformat()
+                })
+                conversation["state"] = ConversationState.COMPLETED
+                await self._save_conversation(user_id, conversation)
+                
+                if response.get("success", False):
+                    await self._close_conversation(user_id)
+                
+                return response
+
+            # Fallback: try re-detection
+            try:
+                alt_intent, alt_operation, alt_conf = await self._detect_intent(prompt, language)
+                if alt_intent != Intent.UNKNOWN and alt_conf >= 0.2:
+                    conversation["intent"] = alt_intent
+                    conversation["operation"] = alt_operation
+                    conversation["confidence"] = alt_conf
+                    conversation["data"] = {}
+                    conversation["field_attempts"] = {}
+                    conversation["state"] = ConversationState.RESPONSE_GENERATION if alt_operation == Operation.GET else ConversationState.DATA_EXTRACTION
+                    await self._save_conversation(user_id, conversation)
+                    return await self.process_agent_request(prompt, user_id, language, context)
+            except Exception:
+                self.logger.debug("Fallback re-detection failed")
+
+            return self._create_error_response("Invalid conversation state", language)
+            
+        except Exception as e:
+            self.logger.error(f"Error processing agent request: {e}")
+            return self._create_error_response(str(e), language)
+
+    # ==================== INTENT DETECTION ====================
+    
+    async def _detect_intent(self, prompt: str, language: str) -> Tuple[Intent, Operation, float]:
+        """Detect user intent from the prompt using AI with improved accuracy"""
+        
+        # Quick regex check for chit-chat
+        chit_chat_patterns = [
+            r"^(hi|hello|hey|bonjour|salut|coucou|good\s*(morning|afternoon|evening)|what'?s?\s*up)[\s!.?]*$",
+            r"^(thanks?|thank\s*you|merci|awesome|great|perfect|ok|okay|cool|nice|got\s*it)[\s!.?]*$",
+            r"^(bye|goodbye|see\s*you|au\s*revoir|ciao|later)[\s!.?]*$",
+            r"^(how\s*are\s*you|how'?s?\s*it\s*going|comment\s*(ça\s*)?va|ça\s*va)[\s!.?]*$",
+            r"^(who\s*are\s*you|what\s*can\s*you\s*do|help|aide)[\s!.?]*$",
+        ]
+        
+        prompt_lower = prompt.strip().lower()
+        for pattern in chit_chat_patterns:
+            if re.search(pattern, prompt_lower, re.IGNORECASE):
+                return Intent.CHIT_CHAT, Operation.UNKNOWN, 0.95
+        
+        # Simplified, focused intent detection prompt
+        intent_prompt = f"""Analyze this user prompt and determine intent and operation. Return JSON only.
+
+User prompt: "{prompt}"
+
+INTENTS (in priority order):
+1. chit_chat - Greetings, thanks, casual talk (hi, hello, thanks, bye, how are you)
+2. manual_task - Personal tasks with colors (red task, blue reminder, planning)
+3. customer - Client/customer management (add client, show customers)
+4. invoice - Billing (create invoice, show invoices)
+5. quote - Estimates (generate quote, show quotes)
+6. expense - Cost tracking (add expense, show expenses)
+7. job - Client work appointments (schedule job for client X)
+
+OPERATIONS:
+- get: Retrieve/show/list/display data
+- create: Add/make/schedule/generate new
+- update: Modify/change/edit existing
+- delete: Remove/cancel existing
+- unknown: For chit-chat
+
+RULES:
+- Color words (red, blue, green) = manual_task
+- "task" without client name = manual_task
+- Specific client name mentioned = job
+- "invoice"/"bill" = invoice
+- "quote"/"estimate" = quote
+- "expense"/"cost" = expense
+- "client"/"customer" = customer
+
+Return: {{"intent": "...", "operation": "...", "confidence": 0.0-1.0, "reasoning": "..."}}"""
+        
+        try:
+            result = await self.sk_service._execute_agent_request(
+                system_prompt="You are an intent classifier. Return JSON only.",
+                user_prompt=intent_prompt,
+                agent_type="intent_detection"
+            )
+            
+            if result.get("success") and result.get("data"):
+                ai_response = result["data"]
+                
+                # Handle wrapped response
+                if isinstance(ai_response, dict) and "response" in ai_response:
+                    ai_response = ai_response["response"]
+                
+                # Parse JSON string
+                if isinstance(ai_response, str):
+                    ai_response = ai_response.strip()
+                    if ai_response.startswith("```"):
+                        ai_response = re.sub(r"```(?:json)?\s*", "", ai_response)
+                        ai_response = ai_response.replace("```", "").strip()
+                    try:
+                        ai_response = json.loads(ai_response)
+                    except json.JSONDecodeError:
+                        pass
+                
+                if isinstance(ai_response, dict):
+                    intent_str = ai_response.get("intent", "unknown")
+                    operation_str = ai_response.get("operation", "unknown")
+                    confidence = float(ai_response.get("confidence", 0.0))
+                    
+                    try:
+                        intent = Intent(intent_str.lower())
+                    except ValueError:
+                        intent = Intent.UNKNOWN
+                        confidence = 0.0
+                    
+                    try:
+                        operation = Operation(operation_str.lower())
+                    except ValueError:
+                        operation = Operation.UNKNOWN
+                    
+                    if confidence > 0.5:
+                        return intent, operation, confidence
+            
+        except Exception as e:
+            self.logger.error(f"Intent detection failed: {e}")
+        
+        # Fallback pattern matching
+        return self._fallback_intent_detection(prompt)
+    
+    def _fallback_intent_detection(self, prompt: str) -> Tuple[Intent, Operation, float]:
+        """Fallback pattern-based intent detection"""
+        prompt_lower = prompt.lower()
+        
+        # Determine operation
+        operation = Operation.UNKNOWN
+        if any(w in prompt_lower for w in ["show", "list", "get", "display", "see", "view", "all my", "my "]):
+            operation = Operation.GET
+        elif any(w in prompt_lower for w in ["create", "add", "make", "schedule", "generate", "new"]):
+            operation = Operation.CREATE
+        elif any(w in prompt_lower for w in ["update", "change", "modify", "edit"]):
+            operation = Operation.UPDATE
+        elif any(w in prompt_lower for w in ["delete", "remove", "cancel"]):
+            operation = Operation.DELETE
+        
+        # Determine intent
+        if any(w in prompt_lower for w in ["red", "blue", "green", "yellow", "orange", "purple", "pink"]):
+            return Intent.MANUAL_TASK, operation if operation != Operation.UNKNOWN else Operation.CREATE, 0.85
+        if "task" in prompt_lower and not any(w in prompt_lower for w in ["client", "customer", "company"]):
+            return Intent.MANUAL_TASK, operation if operation != Operation.UNKNOWN else Operation.CREATE, 0.8
+        if any(w in prompt_lower for w in ["client", "customer", "contact"]):
+            return Intent.CUSTOMER, operation if operation != Operation.UNKNOWN else Operation.GET, 0.8
+        if any(w in prompt_lower for w in ["invoice", "bill", "billing"]):
+            return Intent.INVOICE, operation if operation != Operation.UNKNOWN else Operation.CREATE, 0.8
+        if any(w in prompt_lower for w in ["quote", "estimate", "proposal"]):
+            return Intent.QUOTE, operation if operation != Operation.UNKNOWN else Operation.CREATE, 0.8
+        if any(w in prompt_lower for w in ["expense", "cost", "spending", "receipt"]):
+            return Intent.EXPENSE, operation if operation != Operation.UNKNOWN else Operation.CREATE, 0.8
+        if any(w in prompt_lower for w in ["job", "appointment", "meeting", "schedule"]):
+            return Intent.JOB, operation if operation != Operation.UNKNOWN else Operation.CREATE, 0.7
+        
+        return Intent.UNKNOWN, Operation.UNKNOWN, 0.0
+
+    # ==================== DATA EXTRACTION ====================
+    
+    async def _extract_data(
+        self, 
+        prompt: str, 
+        intent: Intent, 
+        operation: Operation,
+        language: str,
+        history: List[Dict] = None,
+        existing_data: Dict[str, Any] = None
+    ) -> Dict[str, Any]:
+        """Extract data with improved accuracy using focused prompts and cumulative extraction"""
+        
+        if self._is_specific_id_query(prompt, intent):
+            return self._extract_id_from_prompt(prompt, intent)
+        
+        if operation == Operation.GET:
+            return await self._extract_get_query_params(prompt, intent, language)
+        
+        # Build context from existing data for cumulative extraction
+        existing_context = ""
+        if existing_data:
+            non_empty = {k: v for k, v in existing_data.items() if self._is_meaningful_value(v)}
+            if non_empty:
+                existing_context = f"\n\nAlready collected data:\n{json.dumps(non_empty, indent=2, default=str)}\n\nExtract any NEW or UPDATED values from the current prompt."
+        
+        # Build conversation context
+        conversation_context = ""
+        if history and len(history) > 1:
+            recent_history = history[-6:]  # Last 3 exchanges
+            conversation_context = "\n\nRecent conversation:\n"
+            for msg in recent_history:
+                role = msg.get("role", "user")
+                content = msg.get("content", "")[:200]
+                conversation_context += f"{role}: {content}\n"
+        
+        # Focused extraction prompts per intent
+        extraction_prompts = self._get_focused_extraction_prompt(intent)
+        
+        full_prompt = f"""{extraction_prompts}
+{conversation_context}
+{existing_context}
+
+Current user input: "{prompt}"
+
+Extract ALL available data. Return ONLY valid JSON, no explanations."""
+        
+        try:
+            # Use appropriate service method
+            service_method = {
+                Intent.MANUAL_TASK: self.sk_service.process_manual_task_request,
+                Intent.CUSTOMER: self.sk_service.process_customer_request,
+                Intent.INVOICE: self.sk_service.process_invoice_request,
+                Intent.QUOTE: self.sk_service.process_quote_request,
+                Intent.EXPENSE: self.sk_service.process_expense_request,
+                Intent.JOB: self.sk_service.process_job_request,
+            }.get(intent)
+            
+            if not service_method:
+                return {}
+            
+            result = await service_method(
+                prompt=full_prompt,
+                context={"task": "data_extraction"},
+                language=language,
+                history=history
+            )
+            
+            if result.get("success") and result.get("data"):
+                ai_response = result["data"]
+                
+                if isinstance(ai_response, dict) and "response" in ai_response:
+                    ai_response = ai_response["response"]
+                
+                if isinstance(ai_response, str):
+                    ai_response = ai_response.strip()
+                    if ai_response.startswith("```"):
+                        ai_response = re.sub(r"```(?:json)?\s*", "", ai_response)
+                        ai_response = ai_response.replace("```", "").strip()
+                    try:
+                        ai_response = json.loads(ai_response)
+                    except json.JSONDecodeError:
+                        self.logger.warning(f"Failed to parse extraction response: {ai_response[:200]}")
+                        return {}
+                
+                if isinstance(ai_response, dict):
+                    return ai_response
+            
+        except Exception as e:
+            self.logger.error(f"Data extraction failed for {intent}: {e}")
+        
+        return {}
+    
+    def _get_focused_extraction_prompt(self, intent: Intent) -> str:
+        """Get focused extraction prompt for each intent type"""
+        prompts = {
+            Intent.INVOICE: """Extract invoice data. Return JSON with:
+- customer_name: Client full name
+- customer_email: Email address
+- title: Invoice title/subject
+- items: Array of {description, quantity, unit_price, total}
+- total_amount: Total amount
+- vat_rate: VAT rate (default 0.20)
+- due_date: Due date (ISO format)
+- notes: Any notes""",
+
+            Intent.QUOTE: """Extract quote data. Return JSON with:
+- customer_name: Client full name
+- customer_email: Email address
+- title: Quote title
+- project_name: Project name
+- services: Array of {description, hours, hourly_rate, total}
+- estimated_total: Estimated total
+- valid_until: Validity date (ISO format)""",
+
+            Intent.CUSTOMER: """Extract customer data. Return JSON with:
+- name: Full name
+- email: Email address
+- phone: Phone number
+- address: Full address
+- company: Company name (optional)
+- notes: Notes (optional)""",
+
+            Intent.JOB: """Extract job data. Return JSON with:
+- title: Job title/description
+- customer_name: Customer name
+- scheduled_date: Date (ISO format)
+- scheduled_time: Time (HH:MM)
+- duration: Duration in hours
+- location: Location (optional)
+- notes: Notes (optional)""",
+
+            Intent.EXPENSE: """Extract expense data. Return JSON with:
+- description: Expense description
+- amount: Amount spent
+- date: Date (ISO format)
+- category: Category (Materials, Transport, Equipment, Labor, etc.)
+- vendor: Vendor name (optional)""",
+
+            Intent.MANUAL_TASK: """Extract task data. Return JSON with:
+- title: Task title/description
+- start_time: Start datetime (ISO format)
+- end_time: End datetime (ISO format)
+- color: Color hex code (#ff0000 for red, #0000ff for blue, etc.)
+- location: Location (optional)
+- notes: Notes (optional)"""
+        }
+        return prompts.get(intent, "Extract all relevant data as JSON.")
+
+    # ==================== HELPER METHODS ====================
+    
+    def _merge_conversation_data(self, existing_data: Dict[str, Any], new_data: Dict[str, Any]) -> None:
+        """Merge new data with existing, handling nested structures"""
+        nested_section_patterns = [
+            "extracted_data", "clientinformation", "client_information", 
+            "projectdetails", "project_details", "quotedetails", "quote_details",
+            "invoicedetails", "invoice_details", "discountinformation",
+            "taxandtotals", "dates", "notes", "signatures"
+        ]
+        
+        def is_nested_section(key: str) -> bool:
+            normalized = key.lower().replace(" ", "").replace("_", "")
+            return any(normalized == p.replace("_", "") for p in nested_section_patterns)
+        
+        def flatten_and_merge(data: Dict[str, Any], target: Dict[str, Any]) -> None:
+            for key, value in data.items():
+                if is_nested_section(key) and isinstance(value, dict):
+                    flatten_and_merge(value, target)
+                elif isinstance(value, list) and key.lower() in ["items", "services"]:
+                    if self._is_meaningful_value(value):
+                        target["services"] = value
+                        target["items"] = value
+                elif self._is_meaningful_value(value):
+                    normalized_key = self._normalize_field_key(key)
+                    target[normalized_key] = value
+        
+        flatten_and_merge(new_data, existing_data)
+    
+    def _normalize_field_key(self, key: str) -> str:
+        """Normalize field keys to consistent format"""
+        key_mappings = {
+            "clientname": "customer_name", "client_name": "customer_name",
+            "clientemail": "customer_email", "client_email": "customer_email",
+            "estimatedtotal": "estimated_total", "totalamount": "total_amount",
+            "total": "total_amount", "vatrate": "vat_rate",
+            "projectname": "project_name", "validuntil": "valid_until",
+        }
+        normalized = key.lower().replace(" ", "_").replace("-", "_")
+        return key_mappings.get(normalized, normalized)
+    
+    def _is_meaningful_value(self, value: Any) -> bool:
+        """Check if value is meaningful (not empty/null/placeholder)"""
+        if value is None:
+            return False
+        if isinstance(value, str):
+            if not value.strip() or value.strip().lower() in ["", "n/a", "na", "null", "none", "undefined"]:
+                return False
+        elif isinstance(value, (list, dict)):
+            if not value:
+                return False
+        return True
+    
+    def _check_missing_data(self, intent: Intent, operation: Operation, data: Dict[str, Any]) -> List[str]:
+        """Check which required fields are missing"""
+        if operation == Operation.GET:
+            if data.get("query_type") == "specific_id" and not data.get("id"):
+                return ["id"]
+            return []
+        
+        required = self.required_fields.get(intent, [])
+        missing = []
+        
+        for field in required:
+            aliases = self.field_aliases.get(field, [field])
+            field_found = any(alias in data and self._is_meaningful_value(data[alias]) for alias in aliases)
+            if not field_found:
+                missing.append(field)
+        
+        return missing
+    
+    def _is_specific_id_query(self, prompt: str, intent: Intent) -> bool:
+        """Check if prompt asks for specific item by ID"""
+        prompt_lower = prompt.lower()
+        id_patterns = ["by id", "with id", "id:", "invoice id", "client id", "quote id", "job id"]
+        
+        if any(p in prompt_lower for p in id_patterns):
+            return True
+        
+        id_regex = r'\b[a-f0-9]{24}\b|\b[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\b'
+        return bool(re.search(id_regex, prompt_lower))
+    
+    def _extract_id_from_prompt(self, prompt: str, intent: Intent) -> Dict[str, Any]:
+        """Extract ID from prompt"""
+        id_patterns = [
+            r'\b[a-f0-9]{24}\b',
+            r'\b[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\b',
+            r'id[:\s]+([a-f0-9-]+)',
+        ]
+        
+        for pattern in id_patterns:
+            match = re.search(pattern, prompt, re.IGNORECASE)
+            if match:
+                return {
+                    "id": match.group(1) if match.groups() else match.group(0),
+                    "query_type": "specific_id"
+                }
+        
+        return {"query_type": "specific_id", "id": None}
+    
+    def _is_get_all_query(self, prompt: str) -> bool:
+        """Check if prompt is a 'get all' query"""
+        prompt_lower = prompt.lower().strip()
+        get_all_keywords = ["all my", "all the", "list all", "show all", "get all", "display all", "view all"]
+        
+        if any(k in prompt_lower for k in get_all_keywords):
+            return True
+        
+        entities = ["clients", "invoices", "quotes", "jobs", "expenses", "tasks"]
+        return any(f"my {e}" in prompt_lower or f"all {e}" in prompt_lower for e in entities)
+
+    async def _extract_get_query_params(self, prompt: str, intent: Intent, language: str) -> Dict[str, Any]:
+        """Extract search parameters for GET operations"""
+        try:
+            extraction_prompt = self._get_extraction_prompt_for_get(intent)
+            
+            result = await self.sk_service.kernel.invoke_prompt(
+                f"Extract search parameters from: \"{prompt}\"",
+                system_message=f"{extraction_prompt}\n\nReturn ONLY valid JSON.",
+                settings=OpenAIChatPromptExecutionSettings(max_tokens=500, temperature=0.1)
+            )
+            
+            response_text = str(result).strip()
+            if "```" in response_text:
+                response_text = re.sub(r"```(?:json)?\s*", "", response_text).replace("```", "").strip()
+            
+            extracted = json.loads(response_text)
+            cleaned = {k: v for k, v in extracted.items() if v is not None and v != "" and v != []}
+            
+            return {"extracted_data": cleaned, "confidence": 0.9 if cleaned else 0.5}
+            
+        except Exception as e:
+            self.logger.error(f"Error extracting GET params: {e}")
+            return {"extracted_data": {}, "confidence": 0.5}
+
+    def _get_extraction_prompt_for_get(self, intent: Intent) -> str:
+        """Get extraction prompt for GET operations"""
+        prompts = {
+            Intent.INVOICE: "Extract: client_name, status (draft/sent/paid/overdue), date_from, date_to, search_term",
+            Intent.QUOTE: "Extract: client_name, status (draft/sent/accepted/rejected), date_from, date_to, search_term",
+            Intent.CUSTOMER: "Extract: name, email, phone, company, status (active/archived), search_term",
+            Intent.EXPENSE: "Extract: description, category, amount_min, amount_max, date_from, date_to",
+            Intent.JOB: "Extract: title, client_name, status (scheduled/completed), date_from, date_to",
+            Intent.MANUAL_TASK: "Extract: title, color, date_from, date_to, search_term"
+        }
+        return prompts.get(intent, "Extract any search parameters as JSON")
+
+    def _build_search_params(self, intent: Intent, data: Dict[str, Any]) -> Dict[str, str]:
+        """Build search parameters from extracted data"""
+        params = {}
+        
+        for field in ["search_term", "title", "description", "project_name"]:
+            if data.get(field):
+                params["search"] = str(data[field])
+                break
+        
+        if data.get("client_name"):
+            params["client_name"] = str(data["client_name"])
+        elif data.get("name") and intent == Intent.CUSTOMER:
+            params["search"] = str(data["name"])
+        
+        for key in ["status", "invoice_type", "category", "color", "date_from", "date_to"]:
+            if data.get(key):
+                params[key] = str(data[key])
+        
+        return params
+
+    # ==================== RESPONSE GENERATION ====================
+    
+    async def _generate_final_response(
+        self, intent: Intent, operation: Operation, data: Dict[str, Any], language: str, user_id: str
+    ) -> Dict[str, Any]:
+        """Generate final response - same structure as before for frontend compatibility"""
+        
+        # Handle GET operations
+        if operation == Operation.GET:
+            return await self._handle_get_operation(intent, data, user_id)
+        
+        # Handle CREATE operations (return structured data for frontend)
+        return self._generate_create_response(intent, data, user_id)
+    
+    async def _handle_get_operation(self, intent: Intent, data: Dict[str, Any], user_id: str) -> Dict[str, Any]:
+        """Handle GET operations by calling tool methods"""
+        try:
+            search_params = self._build_search_params(intent, data)
+            
+            tool_map = {
+                Intent.JOB: (self.job_tools.get_jobs, {"user_id": user_id, "search": search_params.get("search", ""), "status_filter": search_params.get("status", ""), "client_name": search_params.get("client_name", "")}),
+                Intent.CUSTOMER: (self.client_tools.get_clients, {"user_id": user_id, "search": search_params.get("search", ""), "status_filter": search_params.get("status", "")}),
+                Intent.EXPENSE: (self.expense_tools.get_expenses, {"user_id": user_id, "search": search_params.get("search", ""), "category_filter": search_params.get("category", "")}),
+                Intent.INVOICE: (self.invoice_tools.get_invoices, {"user_id": user_id, "search": search_params.get("search", ""), "status_filter": search_params.get("status", ""), "client_name": search_params.get("client_name", "")}),
+                Intent.QUOTE: (self.quote_tools.get_quotes, {"user_id": user_id, "search": search_params.get("search", ""), "status_filter": search_params.get("status", ""), "client_name": search_params.get("client_name", "")}),
+                Intent.MANUAL_TASK: (self.manual_task_tools.get_manual_tasks, {"user_id": user_id, "search": search_params.get("search", ""), "color_filter": search_params.get("color", "")}),
+            }
+            
+            if intent in tool_map:
+                method, kwargs = tool_map[intent]
+                result = await method(**kwargs)
+                
+                if isinstance(result, str):
+                    try:
+                        result = json.loads(result)
+                    except:
+                        result = {"raw": result}
+                
+                return {
+                    "success": True,
+                    "message": f"Retrieved {intent.value}s successfully",
+                    "data": result,
+                    "intent": intent.value,
+                    "operation": "get",
+                    "timestamp": datetime.now().isoformat()
+                }
+            
+            return {"success": False, "message": f"Unsupported GET for {intent.value}"}
+            
+        except Exception as e:
+            self.logger.error(f"GET operation failed: {e}")
+            return {"success": False, "message": f"Failed to retrieve: {str(e)}"}
+    
+    def _generate_create_response(self, intent: Intent, data: Dict[str, Any], user_id: str) -> Dict[str, Any]:
+        """Generate CREATE response with structured data for frontend"""
+        base_response = {
+            "success": True,
+            "message": "Operation completed successfully",
+            "intent": intent.value,
+            "operation": "create",
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        if intent == Intent.INVOICE:
+            base_response["data"] = {
+                "userId": user_id,
+                "clientName": data.get("customer_name") or data.get("clientName", ""),
+                "clientEmail": data.get("customer_email") or data.get("clientEmail", ""),
+                "title": data.get("title", ""),
+                "items": data.get("items", []),
+                "vatRate": data.get("vat_rate", 20),
+                "total_amount": data.get("total_amount", 0),
+                "status": "draft",
+                "created_at": datetime.now().isoformat()
+            }
+        elif intent == Intent.QUOTE:
+            base_response["data"] = {
+                "userId": user_id,
+                "clientName": data.get("customer_name", ""),
+                "clientEmail": data.get("customer_email", ""),
+                "title": data.get("title", ""),
+                "projectName": data.get("project_name", ""),
+                "items": data.get("services") or data.get("items", []),
+                "estimated_total": data.get("estimated_total", 0),
+                "status": "draft",
+                "created_at": datetime.now().isoformat()
+            }
+        elif intent == Intent.CUSTOMER:
+            base_response["data"] = {
+                "name": data.get("name", ""),
+                "email": data.get("email", ""),
+                "phone": data.get("phone", ""),
+                "address": data.get("address", ""),
+                "company": data.get("company", ""),
+                "status": "active",
+                "created_at": datetime.now().isoformat()
+            }
+        elif intent == Intent.JOB:
+            base_response["data"] = {
+                "title": data.get("title", ""),
+                "customer_name": data.get("customer_name", ""),
+                "scheduled_date": data.get("scheduled_date", ""),
+                "duration": data.get("duration", 0),
+                "status": "scheduled",
+                "created_at": datetime.now().isoformat()
+            }
+        elif intent == Intent.EXPENSE:
+            base_response["data"] = {
+                "description": data.get("description", ""),
+                "amount": data.get("amount", 0),
+                "date": data.get("date", ""),
+                "category": data.get("category", ""),
+                "status": "recorded",
+                "created_at": datetime.now().isoformat()
+            }
+        elif intent == Intent.MANUAL_TASK:
+            base_response["data"] = {
+                "task": {
+                    "id": f"MTK-{datetime.now().strftime('%Y%m%d')}-{uuid.uuid4().hex[:6].upper()}",
+                    "title": data.get("title", ""),
+                    "startTime": data.get("start_time", ""),
+                    "endTime": data.get("end_time", ""),
+                    "color": data.get("color", "#ff0000"),
+                    "createdAt": datetime.now().isoformat()
+                }
+            }
+        
+        return base_response
+
+    async def _generate_chit_chat_response(self, prompt: str, language: str) -> Dict[str, Any]:
+        """Generate conversational response for chit-chat"""
+        import random
+        
+        prompt_lower = prompt.strip().lower()
+        
+        responses = {
+            "en": {
+                "greeting": ["Hello! 👋 How can I help you today?", "Hi there! Ready to help with invoices, quotes, or clients."],
+                "thanks": ["You're welcome! 😊", "Happy to help!"],
+                "farewell": ["Goodbye! 👋", "See you later!"],
+                "help": ["I can help with:\n• Invoices\n• Quotes\n• Clients\n• Jobs\n• Expenses\n\nJust tell me what you need!"],
+                "default": ["How can I assist you today?"]
+            },
+            "fr": {
+                "greeting": ["Bonjour ! 👋 Comment puis-je vous aider ?"],
+                "thanks": ["De rien ! 😊"],
+                "farewell": ["Au revoir ! 👋"],
+                "help": ["Je peux vous aider avec factures, devis, clients, travaux et dépenses."],
+                "default": ["Comment puis-je vous aider ?"]
+            }
+        }
+        
+        lang = responses.get(language, responses["en"])
+        
+        if any(w in prompt_lower for w in ["hi", "hello", "hey", "bonjour"]):
+            category = "greeting"
+        elif any(w in prompt_lower for w in ["thanks", "merci"]):
+            category = "thanks"
+        elif any(w in prompt_lower for w in ["bye", "goodbye"]):
+            category = "farewell"
+        elif any(w in prompt_lower for w in ["help", "what can"]):
+            category = "help"
+        else:
+            category = "default"
+        
+        return {
+            "success": True,
+            "message": random.choice(lang.get(category, lang["default"])),
+            "action": "chit_chat",
+            "intent": "chit_chat"
+        }
+
+    def _create_clarification_response(self, conversation: Dict[str, Any], language: str) -> Dict[str, Any]:
+        """Create response asking for intent clarification"""
+        messages = {
+            "en": "I'm not sure what you'd like. Would you like to create an invoice, quote, add a customer, schedule a job, or track an expense?",
+            "fr": "Je ne suis pas sûr de ce que vous souhaitez. Voulez-vous créer une facture, un devis, ajouter un client, planifier un travail ou enregistrer une dépense?"
+        }
+        
+        return {
+            "success": False,
+            "message": messages.get(language, messages["en"]),
+            "action": "clarify_intent",
+            "suggestions": ["Create an invoice", "Generate a quote", "Add customer", "Schedule a job", "Track an expense"]
+        }
+
+    def _create_missing_data_response(self, conversation: Dict[str, Any], missing_fields: List[str], language: str) -> Dict[str, Any]:
+        """Create response asking for missing data"""
+        field_names = {
+            "en": {
+                "customer_name": "customer name", "customer_email": "customer email",
+                "items": "items or services", "total_amount": "total amount",
+                "services": "services", "estimated_total": "estimated total",
+                "name": "name", "email": "email", "phone": "phone", "address": "address",
+                "title": "title", "scheduled_date": "date", "duration": "duration",
+                "description": "description", "amount": "amount", "date": "date", "category": "category",
+                "start_time": "start time", "end_time": "end time"
+            },
+            "fr": {
+                "customer_name": "nom du client", "customer_email": "email du client",
+                "items": "articles", "total_amount": "montant total",
+                "name": "nom", "email": "email", "phone": "téléphone", "address": "adresse",
+                "title": "titre", "scheduled_date": "date", "duration": "durée"
+            }
+        }
+        
+        labels = field_names.get(language, field_names["en"])
+        missing_labels = [labels.get(f, f) for f in missing_fields]
+        
+        messages = {
+            "en": f"Please provide: {', '.join(missing_labels)}",
+            "fr": f"Veuillez fournir: {', '.join(missing_labels)}"
+        }
+        
+        return {
+            "success": False,
+            "message": messages.get(language, messages["en"]),
+            "action": "provide_missing_data",
+            "missing_fields": missing_fields,
+            "current_data": conversation.get("data", {})
+        }
+
+    def _create_error_response(self, error_message: str, language: str) -> Dict[str, Any]:
+        """Create error response"""
+        return {
+            "success": False,
+            "message": f"Error: {error_message}" if language == "en" else f"Erreur: {error_message}",
+            "action": "error",
+            "error": error_message
+        }
+
+    # ==================== PUBLIC API ====================
+    
+    def reset_conversation(self, user_id: str) -> None:
+        """Reset conversation (sync wrapper for closing)"""
+        if user_id in self._conversation_cache:
+            del self._conversation_cache[user_id]
+        # Note: For full cleanup, call _close_conversation async
+    
+    async def reset_conversation_async(self, user_id: str) -> None:
+        """Reset conversation asynchronously"""
+        await self._close_conversation(user_id)
+    
+    def get_conversation_status(self, user_id: str) -> Dict[str, Any]:
+        """Get current conversation status"""
+        if user_id not in self._conversation_cache:
+            return {"status": "no_active_conversation"}
+        
+        conv = self._conversation_cache[user_id]
+        return {
+            "status": "active",
+            "state": conv["state"].value if isinstance(conv["state"], ConversationState) else conv["state"],
+            "intent": conv["intent"].value if isinstance(conv.get("intent"), Intent) else conv.get("intent"),
+            "confidence": conv.get("confidence", 0.0),
+            "has_data": bool(conv.get("data")),
+            "field_attempts": conv.get("field_attempts", {}),
+            "created_at": conv.get("created_at", "").isoformat() if hasattr(conv.get("created_at", ""), "isoformat") else str(conv.get("created_at", "")),
+            "updated_at": conv.get("updated_at", "").isoformat() if hasattr(conv.get("updated_at", ""), "isoformat") else str(conv.get("updated_at", ""))
+        }
+
+    async def get_user_conversations(self, user_id: str, page: int = 1, page_size: int = 20) -> Dict[str, Any]:
+        """Get paginated list of user's conversations from database"""
+        try:
+            collection = get_conversations_collection()
+            
+            skip = (page - 1) * page_size
+            
+            cursor = collection.find({"user_id": user_id}).sort("created_at", -1).skip(skip).limit(page_size + 1)
+            conversations = await cursor.to_list(length=page_size + 1)
+            
+            has_more = len(conversations) > page_size
+            if has_more:
+                conversations = conversations[:page_size]
+            
+            total = await collection.count_documents({"user_id": user_id})
+            
+            return {
+                "conversations": [
+                    {
+                        "id": str(c["_id"]),
+                        "intent": c.get("intent"),
+                        "operation": c.get("operation"),
+                        "state": c.get("state"),
+                        "message_count": len(c.get("messages", [])),
+                        "created_at": c.get("created_at", "").isoformat() if hasattr(c.get("created_at", ""), "isoformat") else str(c.get("created_at", "")),
+                        "updated_at": c.get("updated_at", "").isoformat() if hasattr(c.get("updated_at", ""), "isoformat") else str(c.get("updated_at", "")),
+                        "is_active": c.get("is_active", False)
+                    }
+                    for c in conversations
+                ],
+                "total": total,
+                "page": page,
+                "page_size": page_size,
+                "has_more": has_more
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Error fetching conversations: {e}")
+            return {"conversations": [], "total": 0, "page": page, "page_size": page_size, "has_more": False}
+
+    async def get_conversation_by_id(self, conversation_id: str, user_id: str) -> Optional[Dict[str, Any]]:
+        """Get specific conversation by ID"""
+        try:
+            collection = get_conversations_collection()
+            
+            doc = await collection.find_one({
+                "_id": ObjectId(conversation_id),
+                "user_id": user_id
+            })
+            
+            if not doc:
+                return None
+            
+            return {
+                "id": str(doc["_id"]),
+                "user_id": doc.get("user_id"),
+                "intent": doc.get("intent"),
+                "operation": doc.get("operation"),
+                "state": doc.get("state"),
+                "confidence": doc.get("confidence", 0.0),
+                "messages": doc.get("messages", []),
+                "extracted_data": doc.get("extracted_data", {}),
+                "field_attempts": doc.get("field_attempts", {}),
+                "language": doc.get("language", "en"),
+                "created_at": doc.get("created_at", "").isoformat() if hasattr(doc.get("created_at", ""), "isoformat") else str(doc.get("created_at", "")),
+                "updated_at": doc.get("updated_at", "").isoformat() if hasattr(doc.get("updated_at", ""), "isoformat") else str(doc.get("updated_at", "")),
+                "is_active": doc.get("is_active", False)
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Error fetching conversation {conversation_id}: {e}")
+            return None

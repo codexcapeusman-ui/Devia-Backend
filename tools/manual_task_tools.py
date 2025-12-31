@@ -237,21 +237,25 @@ class ManualTaskTools:
     )
     async def get_manual_tasks(self, 
                 user_id: str,
+                search: str = "",
+                color_filter: str = "",
                 skip: int = 0, 
                 limit: int = 100, 
                 client_id: Optional[str] = None,
-                start_date: Optional[str] = None,
-                end_date: Optional[str] = None) -> str:
+                date_from: Optional[str] = None,
+                date_to: Optional[str] = None) -> str:
         """
         Retrieve manual tasks from database with filtering
         
         Args:
             user_id: User ID (required for security)
+            search: Optional search text to filter by title, notes, or location
+            color_filter: Filter by task color
             skip: Number of tasks to skip for pagination
             limit: Maximum number of tasks to return
             client_id: Filter by client ID
-            start_date: Filter tasks starting from this date (ISO format)
-            end_date: Filter tasks ending before this date (ISO format)
+            date_from: Filter tasks starting from this date (ISO format)
+            date_to: Filter tasks ending before this date (ISO format)
             
         Returns:
             JSON string containing actual manual tasks data from database
@@ -260,17 +264,34 @@ class ManualTaskTools:
             print(f"[DEBUG] ManualTaskTools.get_manual_tasks() - User ID: {user_id} (type: {type(user_id)})")
             from database import is_connected
             print(f"[DEBUG] ManualTaskTools.get_manual_tasks() - Database connected: {is_connected()}")
-            return await self._get_manual_tasks_async(skip, limit, user_id, client_id, start_date, end_date)
+            return await self._get_manual_tasks_async(skip, limit, user_id, search, color_filter, client_id, date_from, date_to)
         except Exception as e:
             return json.dumps({"error": f"Failed to get manual tasks: {str(e)}", "tasks": [], "total": 0})
 
-    async def _get_manual_tasks_async(self, skip, limit, user_id, client_id, start_date, end_date):
+    async def _get_manual_tasks_async(self, skip, limit, user_id, search="", color_filter="", client_id=None, date_from=None, date_to=None):
         """Async implementation for getting manual tasks"""
         try:
+            import re
+            from dateutil.parser import parse as parse_date
+            
             tasks_collection = get_manual_tasks_collection()
             
             # Build query filter
             query = {"userId": user_id}
+            
+            # Add search filter - search across multiple fields
+            if search:
+                regex = re.compile(re.escape(search), re.IGNORECASE)
+                query["$or"] = [
+                    {"title": {"$regex": regex}},
+                    {"notes": {"$regex": regex}},
+                    {"location": {"$regex": regex}}
+                ]
+            
+            # Add color filter
+            if color_filter:
+                color_regex = re.compile(re.escape(color_filter), re.IGNORECASE)
+                query["color"] = {"$regex": color_regex}
             
             print(f"[DEBUG] Manual task query: {query}")
             
@@ -282,13 +303,20 @@ class ManualTaskTools:
                 query["clientId"] = client_id
             
             # Date range filtering
-            if start_date or end_date:
+            if date_from or date_to:
                 date_filter = {}
-                if start_date:
-                    date_filter["$gte"] = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
-                if end_date:
-                    date_filter["$lte"] = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
-                query["startTime"] = date_filter
+                if date_from:
+                    try:
+                        date_filter["$gte"] = parse_date(date_from)
+                    except:
+                        pass
+                if date_to:
+                    try:
+                        date_filter["$lte"] = parse_date(date_to)
+                    except:
+                        pass
+                if date_filter:
+                    query["startTime"] = date_filter
             
             # Get total count for pagination
             total = await tasks_collection.count_documents(query)
