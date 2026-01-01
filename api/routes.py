@@ -256,18 +256,40 @@ async def get_user_conversations(
     user_id: str = Depends(get_current_user_id_dependency)
 ):
     """
-    Get paginated list of user's conversation history
+    Get paginated list of user's conversation history with full details
     
     Returns:
-    - List of conversations with metadata (intent, state, message count)
+    - List of full conversations with all messages and extracted data
     - Pagination info (total, page, page_size, has_more)
     """
     try:
-        result = await unified_service.get_user_conversations(
+        # First get the conversation summaries to get IDs
+        summary_result = await unified_service.get_user_conversations(
             user_id=user_id,
             page=page,
             page_size=page_size
         )
+        
+        # Fetch full details for each conversation
+        full_conversations = []
+        for conv_summary in summary_result["conversations"]:
+            conv_id = conv_summary["id"]
+            full_conv = await unified_service.get_conversation_by_id(
+                conversation_id=conv_id,
+                user_id=user_id
+            )
+            if full_conv:
+                full_conversations.append(full_conv)
+        
+        # Return with full details
+        result = {
+            "conversations": full_conversations,
+            "total": summary_result["total"],
+            "page": summary_result["page"],
+            "page_size": summary_result["page_size"],
+            "has_more": summary_result["has_more"]
+        }
+        
         return {
             "success": True,
             "data": result
