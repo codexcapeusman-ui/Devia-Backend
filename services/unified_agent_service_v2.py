@@ -874,8 +874,22 @@ Extract ALL available data. Return ONLY valid JSON, no explanations."""
         return {"query_type": "specific_id", "id": None}
     
     def _is_get_all_query(self, prompt: str) -> bool:
-        """Check if prompt is a 'get all' query"""
+        """Check if prompt is a simple 'get all' query WITHOUT filters"""
         prompt_lower = prompt.lower().strip()
+        
+        # If the prompt contains filter keywords, it's NOT a simple "get all" query
+        filter_keywords = [
+            "with status", "status", "where", "filter", "for", "of", "named", "called",
+            "from", "since", "until", "before", "after", "between", "draft", "sent", 
+            "paid", "overdue", "cancelled", "accepted", "rejected", "expired",
+            "scheduled", "completed", "in_progress", "active", "archived", "delinquent"
+        ]
+        
+        for keyword in filter_keywords:
+            if keyword in prompt_lower:
+                return False  # Has filters, need to extract params
+        
+        # Simple "get all" patterns without filters
         get_all_keywords = ["all my", "all the", "list all", "show all", "get all", "display all", "view all"]
         
         if any(k in prompt_lower for k in get_all_keywords):
@@ -890,17 +904,38 @@ Extract ALL available data. Return ONLY valid JSON, no explanations."""
             extraction_prompt = self._get_extraction_prompt_for_get(intent)
             
             result = await self.sk_service.kernel.invoke_prompt(
-                f"Extract search parameters from: \"{prompt}\"",
-                system_message=f"{extraction_prompt}\n\nReturn ONLY valid JSON.",
-                settings=OpenAIChatPromptExecutionSettings(max_tokens=500, temperature=0.1)
+                f"Extract search parameters from this query and return as JSON: \"{prompt}\"",
+                system_message=f"You are a data extraction assistant. {extraction_prompt}\n\nIMPORTANT: Return ONLY valid JSON with the specified fields. Use null for missing values.",
+                settings=OpenAIChatPromptExecutionSettings(
+                    max_tokens=500, 
+                    temperature=0.1,
+                    response_format={"type": "json_object"}
+                )
             )
             
             response_text = str(result).strip()
-            if "```" in response_text:
-                response_text = re.sub(r"```(?:json)?\s*", "", response_text).replace("```", "").strip()
+            self.logger.debug(f"GET params extraction raw response: {response_text[:200]}")
             
-            extracted = json.loads(response_text)
+            # Handle empty response
+            if not response_text:
+                self.logger.warning("Empty response from GET params extraction")
+                return {"extracted_data": {}, "confidence": 0.5}
+            
+            # Clean markdown code blocks
+            if "```json" in response_text:
+                response_text = response_text.split("```json")[1].split("```")[0].strip()
+            elif "```" in response_text:
+                response_text = response_text.split("```")[1].split("```")[0].strip()
+            
+            # Try parsing JSON
+            try:
+                extracted = json.loads(response_text)
+            except json.JSONDecodeError as je:
+                self.logger.warning(f"JSON parse error: {je}. Response was: {response_text[:200]}")
+                return {"extracted_data": {}, "confidence": 0.5}
+            
             cleaned = {k: v for k, v in extracted.items() if v is not None and v != "" and v != []}
+            self.logger.info(f"Extracted GET query params: {cleaned}")
             
             return {"extracted_data": cleaned, "confidence": 0.9 if cleaned else 0.5}
             
@@ -911,14 +946,66 @@ Extract ALL available data. Return ONLY valid JSON, no explanations."""
     def _get_extraction_prompt_for_get(self, intent: Intent) -> str:
         """Get extraction prompt for GET operations"""
         prompts = {
-            Intent.INVOICE: "Extract: client_name, status (draft/sent/paid/overdue), date_from, date_to, search_term",
-            Intent.QUOTE: "Extract: client_name, status (draft/sent/accepted/rejected), date_from, date_to, search_term",
-            Intent.CUSTOMER: "Extract: name, email, phone, company, status (active/archived), search_term",
-            Intent.EXPENSE: "Extract: description, category, amount_min, amount_max, date_from, date_to",
-            Intent.JOB: "Extract: title, client_name, status (scheduled/completed), date_from, date_to",
-            Intent.MANUAL_TASK: "Extract: title, color, date_from, date_to, search_term"
+            Intent.INVOICE: """Extract these fields for invoice search (use null for fields not mentioned):
+{
+  "client_name": "Name of the client/customer" or null,
+  "status": "draft" | "sent" | "paid" | "overdue" | "cancelled" or null,
+  "invoice_type": "deposit" | "progress" | "final" or null,
+  "date_from": "ISO date" or null,
+  "date_to": "ISO date" or null,
+  "search_term": "general search term" or null
+}""",
+            Intent.QUOTE: """Extract these fields for quote search (use null for fields not mentioned):
+{
+  "client_name": "Name of the client/customer" or null,
+  "status": "draft" | "sent" | "accepted" | "rejected" | "expired" or null,
+  "date_from": "ISO date" or null,
+  "date_to": "ISO date" or null,
+  "search_term": "general search term" or null
+}""",
+            Intent.CUSTOMER: """Extract these fields for client/customer search (use null for fields not mentioned):
+{
+  "name": "Name to search for" or null,
+  "email": "Email to search for" or null,
+  "phone": "Phone number" or null,
+  "company": "Company name" or null,
+  "status": "active" | "delinquent" | "archived" or null,
+  "search_term": "general search term" or null
+}""",
+            Intent.EXPENSE: """Extract these fields for expense search (use null for fields not mentioned):
+{
+  "description": "Description to search" or null,
+  "category": "Materials" | "Transport" | "Equipment" | "Labor" | "Insurance" | "General" | "Training" | "Marketing" | "Others" or null,
+  "amount_min": number or null,
+  "amount_max": number or null,
+  "date_from": "ISO date" or null,
+  "date_to": "ISO date" or null,
+  "search_term": "general search term" or null
+}""",
+            Intent.JOB: """Extract these fields for job search (use null for fields not mentioned):
+{
+  "title": "Job title" or null,
+  "client_name": "Client name" or null,
+  "location": "Location" or null,
+  "status": "scheduled" | "in_progress" | "completed" | "cancelled" or null,
+  "date_from": "ISO date" or null,
+  "date_to": "ISO date" or null,
+  "search_term": "general search term" or null
+}""",
+            Intent.MANUAL_TASK: """Extract these fields for manual task search (use null for fields not mentioned):
+{
+  "title": "Task title" or null,
+  "color": "Color filter" or null,
+  "location": "Location" or null,
+  "date_from": "ISO date" or null,
+  "date_to": "ISO date" or null,
+  "search_term": "general search term" or null
+}"""
         }
-        return prompts.get(intent, "Extract any search parameters as JSON")
+        return prompts.get(intent, """Extract any search parameters as JSON:
+{
+  "search_term": "general search term" or null
+}""")
 
     def _build_search_params(self, intent: Intent, data: Dict[str, Any]) -> Dict[str, str]:
         """Build search parameters from extracted data"""
@@ -949,23 +1036,62 @@ Extract ALL available data. Return ONLY valid JSON, no explanations."""
         
         # Handle GET operations
         if operation == Operation.GET:
-            return await self._handle_get_operation(intent, data, user_id)
+            return await self._handle_get_operation(intent, data, user_id, language)
         
         # Handle CREATE operations (return structured data for frontend)
         return self._generate_create_response(intent, data, user_id)
     
-    async def _handle_get_operation(self, intent: Intent, data: Dict[str, Any], user_id: str) -> Dict[str, Any]:
+    async def _handle_get_operation(self, intent: Intent, data: Dict[str, Any], user_id: str, language: str = "en") -> Dict[str, Any]:
         """Handle GET operations by calling tool methods"""
         try:
             search_params = self._build_search_params(intent, data)
+            self.logger.info(f"GET query with search params: {search_params}")
             
             tool_map = {
-                Intent.JOB: (self.job_tools.get_jobs, {"user_id": user_id, "search": search_params.get("search", ""), "status_filter": search_params.get("status", ""), "client_name": search_params.get("client_name", "")}),
-                Intent.CUSTOMER: (self.client_tools.get_clients, {"user_id": user_id, "search": search_params.get("search", ""), "status_filter": search_params.get("status", "")}),
-                Intent.EXPENSE: (self.expense_tools.get_expenses, {"user_id": user_id, "search": search_params.get("search", ""), "category_filter": search_params.get("category", "")}),
-                Intent.INVOICE: (self.invoice_tools.get_invoices, {"user_id": user_id, "search": search_params.get("search", ""), "status_filter": search_params.get("status", ""), "client_name": search_params.get("client_name", "")}),
-                Intent.QUOTE: (self.quote_tools.get_quotes, {"user_id": user_id, "search": search_params.get("search", ""), "status_filter": search_params.get("status", ""), "client_name": search_params.get("client_name", "")}),
-                Intent.MANUAL_TASK: (self.manual_task_tools.get_manual_tasks, {"user_id": user_id, "search": search_params.get("search", ""), "color_filter": search_params.get("color", "")}),
+                Intent.JOB: (self.job_tools.get_jobs, {
+                    "user_id": user_id, 
+                    "search": search_params.get("search", ""), 
+                    "status_filter": search_params.get("status", ""), 
+                    "client_name": search_params.get("client_name", ""),
+                    "date_from": search_params.get("date_from", ""),
+                    "date_to": search_params.get("date_to", "")
+                }),
+                Intent.CUSTOMER: (self.client_tools.get_clients, {
+                    "user_id": user_id, 
+                    "search": search_params.get("search", ""), 
+                    "status_filter": search_params.get("status", "")
+                }),
+                Intent.EXPENSE: (self.expense_tools.get_expenses, {
+                    "user_id": user_id, 
+                    "search": search_params.get("search", ""), 
+                    "category_filter": search_params.get("category", ""),
+                    "date_from": search_params.get("date_from", ""),
+                    "date_to": search_params.get("date_to", "")
+                }),
+                Intent.INVOICE: (self.invoice_tools.get_invoices, {
+                    "user_id": user_id, 
+                    "search": search_params.get("search", ""), 
+                    "status_filter": search_params.get("status", ""), 
+                    "client_name": search_params.get("client_name", ""),
+                    "invoice_type": search_params.get("invoice_type", ""),
+                    "date_from": search_params.get("date_from", ""),
+                    "date_to": search_params.get("date_to", "")
+                }),
+                Intent.QUOTE: (self.quote_tools.get_quotes, {
+                    "user_id": user_id, 
+                    "search": search_params.get("search", ""), 
+                    "status_filter": search_params.get("status", ""), 
+                    "client_name": search_params.get("client_name", ""),
+                    "date_from": search_params.get("date_from", ""),
+                    "date_to": search_params.get("date_to", "")
+                }),
+                Intent.MANUAL_TASK: (self.manual_task_tools.get_manual_tasks, {
+                    "user_id": user_id, 
+                    "search": search_params.get("search", ""), 
+                    "color_filter": search_params.get("color", ""),
+                    "date_from": search_params.get("date_from", ""),
+                    "date_to": search_params.get("date_to", "")
+                }),
             }
             
             if intent in tool_map:
@@ -978,10 +1104,12 @@ Extract ALL available data. Return ONLY valid JSON, no explanations."""
                     except:
                         result = {"raw": result}
                 
+                # Generate human-friendly message from the data
+                human_message = await self._generate_human_friendly_message(intent, result, language)
+                
                 return {
                     "success": True,
-                    "message": f"Retrieved {intent.value}s successfully",
-                    "data": result,
+                    "message": human_message,
                     "intent": intent.value,
                     "operation": "get",
                     "timestamp": datetime.now().isoformat()
@@ -992,6 +1120,203 @@ Extract ALL available data. Return ONLY valid JSON, no explanations."""
         except Exception as e:
             self.logger.error(f"GET operation failed: {e}")
             return {"success": False, "message": f"Failed to retrieve: {str(e)}"}
+    
+    async def _generate_human_friendly_message(self, intent: Intent, data: Dict[str, Any], language: str) -> str:
+        """Generate a human-friendly summary message from retrieved data"""
+        try:
+            # Get the data list based on intent
+            entity_key = self._get_entity_key(intent)
+            items = data.get(entity_key, [])
+            total = data.get("total", len(items))
+            
+            # If no data found
+            if total == 0 or not items:
+                return self._get_no_data_message(intent, language)
+            
+            # Build context for LLM
+            summary_context = self._build_summary_context(intent, items, total)
+            
+            # Generate human-friendly message using LLM
+            system_prompt = f"""You are a helpful business assistant. Generate a concise, friendly summary of the retrieved data.
+
+RULES:
+- Be conversational and helpful
+- Include key statistics (counts, totals, statuses)
+- Mention important details like amounts, dates, names
+- Keep it concise (2-4 sentences max)
+- Use currency symbol € for amounts
+- {"Respond in French" if language == "fr" else "Respond in English"}
+- Do NOT list every item, just summarize
+- Include actionable insights if relevant (e.g., "You have 2 overdue invoices that need attention")"""
+
+            user_prompt = f"Summarize this {intent.value} data for the user:\n{summary_context}"
+            
+            result = await self.sk_service.kernel.invoke_prompt(
+                user_prompt,
+                system_message=system_prompt,
+                settings=OpenAIChatPromptExecutionSettings(
+                    max_tokens=300,
+                    temperature=0.7
+                )
+            )
+            
+            return str(result).strip()
+            
+        except Exception as e:
+            self.logger.error(f"Error generating human message: {e}")
+            # Fallback to basic message
+            return self._generate_fallback_message(intent, data, language)
+    
+    def _get_entity_key(self, intent: Intent) -> str:
+        """Get the data key for each intent type"""
+        key_map = {
+            Intent.INVOICE: "invoices",
+            Intent.QUOTE: "quotes",
+            Intent.CUSTOMER: "clients",
+            Intent.EXPENSE: "expenses",
+            Intent.JOB: "jobs",
+            Intent.MANUAL_TASK: "tasks"
+        }
+        return key_map.get(intent, "items")
+    
+    def _get_no_data_message(self, intent: Intent, language: str) -> str:
+        """Get message when no data is found"""
+        messages = {
+            Intent.INVOICE: {
+                "en": "No invoices found matching your criteria. Would you like to create a new invoice?",
+                "fr": "Aucune facture trouvée correspondant à vos critères. Voulez-vous créer une nouvelle facture?"
+            },
+            Intent.QUOTE: {
+                "en": "No quotes found matching your criteria. Would you like to create a new quote?",
+                "fr": "Aucun devis trouvé correspondant à vos critères. Voulez-vous créer un nouveau devis?"
+            },
+            Intent.CUSTOMER: {
+                "en": "No clients found matching your criteria. Would you like to add a new client?",
+                "fr": "Aucun client trouvé correspondant à vos critères. Voulez-vous ajouter un nouveau client?"
+            },
+            Intent.EXPENSE: {
+                "en": "No expenses found matching your criteria. Would you like to record a new expense?",
+                "fr": "Aucune dépense trouvée correspondant à vos critères. Voulez-vous enregistrer une nouvelle dépense?"
+            },
+            Intent.JOB: {
+                "en": "No jobs found matching your criteria. Would you like to schedule a new job?",
+                "fr": "Aucun travail trouvé correspondant à vos critères. Voulez-vous planifier un nouveau travail?"
+            },
+            Intent.MANUAL_TASK: {
+                "en": "No tasks found matching your criteria. Would you like to create a new task?",
+                "fr": "Aucune tâche trouvée correspondant à vos critères. Voulez-vous créer une nouvelle tâche?"
+            }
+        }
+        return messages.get(intent, {}).get(language, messages.get(intent, {}).get("en", "No data found."))
+    
+    def _build_summary_context(self, intent: Intent, items: List[Dict], total: int) -> str:
+        """Build summary context for LLM based on intent type"""
+        
+        if intent == Intent.INVOICE:
+            # Summarize invoices
+            status_counts = {}
+            total_amount = 0
+            client_names = set()
+            
+            for inv in items:
+                status = inv.get("status", "unknown")
+                status_counts[status] = status_counts.get(status, 0) + 1
+                total_amount += inv.get("total", 0)
+                if inv.get("clientName"):
+                    client_names.add(inv.get("clientName"))
+            
+            return f"""Total invoices: {total}
+Status breakdown: {json.dumps(status_counts)}
+Total amount: €{total_amount:.2f}
+Clients involved: {len(client_names)} ({', '.join(list(client_names)[:3])}{'...' if len(client_names) > 3 else ''})"""
+
+        elif intent == Intent.QUOTE:
+            status_counts = {}
+            total_amount = 0
+            client_names = set()
+            
+            for quote in items:
+                status = quote.get("status", "unknown")
+                status_counts[status] = status_counts.get(status, 0) + 1
+                total_amount += quote.get("total", 0)
+                if quote.get("clientName"):
+                    client_names.add(quote.get("clientName"))
+            
+            return f"""Total quotes: {total}
+Status breakdown: {json.dumps(status_counts)}
+Total estimated value: €{total_amount:.2f}
+Clients: {', '.join(list(client_names)[:3])}{'...' if len(client_names) > 3 else ''}"""
+
+        elif intent == Intent.CUSTOMER:
+            status_counts = {}
+            total_balance = 0
+            
+            for client in items:
+                status = client.get("status", "active")
+                status_counts[status] = status_counts.get(status, 0) + 1
+                total_balance += client.get("balance", 0)
+            
+            client_names = [c.get("name", "Unknown") for c in items[:5]]
+            
+            return f"""Total clients: {total}
+Status breakdown: {json.dumps(status_counts)}
+Total outstanding balance: €{total_balance:.2f}
+Sample clients: {', '.join(client_names)}{'...' if total > 5 else ''}"""
+
+        elif intent == Intent.EXPENSE:
+            category_totals = {}
+            total_amount = 0
+            
+            for exp in items:
+                category = exp.get("category", "Other")
+                amount = exp.get("amount", 0)
+                category_totals[category] = category_totals.get(category, 0) + amount
+                total_amount += amount
+            
+            return f"""Total expenses: {total}
+Total amount: €{total_amount:.2f}
+By category: {json.dumps(category_totals)}"""
+
+        elif intent == Intent.JOB:
+            status_counts = {}
+            client_names = set()
+            
+            for job in items:
+                status = job.get("status", "scheduled")
+                status_counts[status] = status_counts.get(status, 0) + 1
+                if job.get("clientId"):
+                    client_names.add(job.get("title", "Untitled"))
+            
+            return f"""Total jobs: {total}
+Status breakdown: {json.dumps(status_counts)}
+Recent jobs: {', '.join([j.get('title', 'Untitled') for j in items[:3]])}"""
+
+        elif intent == Intent.MANUAL_TASK:
+            color_counts = {}
+            
+            for task in items:
+                color = task.get("color", "default")
+                color_counts[color] = color_counts.get(color, 0) + 1
+            
+            return f"""Total tasks: {total}
+By color/category: {json.dumps(color_counts)}
+Recent tasks: {', '.join([t.get('title', 'Untitled') for t in items[:3]])}"""
+
+        else:
+            return f"Total items: {total}"
+    
+    def _generate_fallback_message(self, intent: Intent, data: Dict[str, Any], language: str) -> str:
+        """Generate a simple fallback message without LLM"""
+        print("Generating fallback message...")
+        entity_key = self._get_entity_key(intent)
+        items = data.get(entity_key, [])
+        total = data.get("total", len(items))
+        
+        entity_name = intent.value + "s" if intent.value[-1] != 's' else intent.value
+        
+        if language == "fr":
+            return f"J'ai trouvé {total} {entity_name}. Voulez-vous plus de détails?"
+        return f"I found {total} {entity_name}. Would you like more details?"
     
     def _generate_create_response(self, intent: Intent, data: Dict[str, Any], user_id: str) -> Dict[str, Any]:
         """Generate CREATE response with structured data for frontend"""

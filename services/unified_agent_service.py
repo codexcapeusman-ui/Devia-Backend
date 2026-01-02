@@ -914,19 +914,40 @@ Return ONLY valid JSON, no explanations."""
                 system_message=system_prompt,
                 settings=OpenAIChatPromptExecutionSettings(
                     max_tokens=500,
-                    temperature=0.1
+                    temperature=0.1,
+                    response_format={"type": "json_object"}
                 )
             )
             
             response_text = str(result).strip()
+            self.logger.debug(f"GET params extraction raw response: {response_text[:200]}")
             
-            # Parse JSON response
+            # Handle empty response
+            if not response_text:
+                self.logger.warning("Empty response from GET params extraction")
+                return {
+                    "extracted_data": {},
+                    "confidence": 0.5,
+                    "missing_fields": []
+                }
+            
+            # Parse JSON response - handle markdown code blocks
             if "```json" in response_text:
                 response_text = response_text.split("```json")[1].split("```")[0].strip()
             elif "```" in response_text:
                 response_text = response_text.split("```")[1].split("```")[0].strip()
             
-            extracted_data = json.loads(response_text)
+            # Try parsing JSON
+            try:
+                extracted_data = json.loads(response_text)
+            except json.JSONDecodeError as je:
+                self.logger.warning(f"JSON parse error: {je}. Response was: {response_text[:200]}")
+                # Return empty dict if JSON parsing fails
+                return {
+                    "extracted_data": {},
+                    "confidence": 0.5,
+                    "missing_fields": []
+                }
             
             # Clean up null/empty values
             cleaned_data = {k: v for k, v in extracted_data.items() if v is not None and v != "" and v != []}
@@ -941,6 +962,7 @@ Return ONLY valid JSON, no explanations."""
             
         except Exception as e:
             self.logger.error(f"Error extracting GET query params: {e}")
+            # Return empty extraction so the query can still proceed without filters
             return {
                 "extracted_data": {},
                 "confidence": 0.5,
