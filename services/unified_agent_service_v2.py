@@ -1230,6 +1230,7 @@ Extract ALL available data. Return ONLY valid JSON, no explanations."""
             # The user_settings collection uses 'user_id' (snake_case)
             user_settings = await settings_collection.find_one({"user_id": user_id})
             
+            print(f"DEBUG: user_settings for {user_id}: {user_settings}")
             self.logger.info(f"User settings lookup for {user_id}: {'found' if user_settings else 'not found'}")
             
             if not user_settings:
@@ -1247,6 +1248,7 @@ Extract ALL available data. Return ONLY valid JSON, no explanations."""
             
             # Clean up settings for display (remove sensitive data)
             display_settings = self._sanitize_settings_for_display(user_settings)
+            print(f"DEBUG: display_settings: {display_settings}")
             
             # Get the original user query from data
             original_prompt = data.get("_original_prompt", "")
@@ -1346,32 +1348,41 @@ Extract ALL available data. Return ONLY valid JSON, no explanations."""
     async def _generate_settings_response(self, settings: Dict[str, Any], original_prompt: str, language: str) -> str:
         """Generate a human-friendly response about user settings"""
         try:
-            system_prompt = f"""You are a helpful business assistant. Answer the user's question about their profile/settings based on the provided data.
+            print(f"DEBUG: _generate_settings_response called with settings: {settings}")
+            print(f"DEBUG: original_prompt: {original_prompt}")
+            system_prompt = f"""You are a helpful business assistant for a contractor/tradesperson management app. 
+The user is asking about THEIR OWN profile and settings data. This is their personal business information that they have stored in the app.
+You MUST answer their questions using the data provided below - this is NOT private third-party data, it's the user's own account information.
 
 RULES:
-- Be conversational and helpful
-- Answer ONLY the specific question asked
-- If asked about rates but no rates are configured, politely say "I don't see any service rates configured in your settings. You can add them in the Settings page."
-- If asked about integrations, explain the connection status clearly (connected/not configured)
-- If asked about company info, provide the relevant details from the data
-- Keep responses concise but complete
-- Use currency symbol € for amounts unless specified otherwise in settings
-- If a specific piece of information is not available, say it's not configured yet
+- Answer the user's question directly using the provided settings data
+- This is the user's own data - they have full rights to see it
+- If asked about company name, provide it from the data
+- If asked about rates but no rates are configured, say "I don't see any service rates configured in your settings yet. You can add them in the Settings page."
+- If asked about integrations, explain the connection status (connected/not configured)
+- Keep responses concise and helpful
+- Use currency symbol € for amounts
+- If a specific piece of information is not in the data, say it's not configured yet
 - {"Respond in French" if language == "fr" else "Respond in English"}
 
-USER SETTINGS DATA:
+THE USER'S SETTINGS DATA:
 {json.dumps(settings, indent=2, default=str)}"""
 
-            user_prompt = f"User question: {original_prompt}" if original_prompt else "Summarize my profile and settings."
+            user_prompt = f"""{system_prompt}
+
+User question: {original_prompt}""" if original_prompt else f"""{system_prompt}
+
+Summarize my profile and settings."""
+            print(f"DEBUG: user_prompt: {user_prompt}")
             
             result = await self.sk_service.kernel.invoke_prompt(
                 user_prompt,
-                system_message=system_prompt,
                 settings=OpenAIChatPromptExecutionSettings(
                     max_tokens=400,
                     temperature=0.7
                 )
             )
+            print(f"DEBUG: AI result: {result}")
             
             return str(result).strip()
             
