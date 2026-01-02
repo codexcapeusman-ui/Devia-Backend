@@ -1226,7 +1226,11 @@ Extract ALL available data. Return ONLY valid JSON, no explanations."""
         try:
             # Fetch user settings from database
             settings_collection = get_settings_collection()
-            user_settings = await settings_collection.find_one({"userId": user_id})
+            
+            # The user_settings collection uses 'user_id' (snake_case)
+            user_settings = await settings_collection.find_one({"user_id": user_id})
+            
+            self.logger.info(f"User settings lookup for {user_id}: {'found' if user_settings else 'not found'}")
             
             if not user_settings:
                 no_settings_msg = {
@@ -1266,41 +1270,76 @@ Extract ALL available data. Return ONLY valid JSON, no explanations."""
         """Remove sensitive data from settings before sending to AI"""
         sanitized = {}
         
-        # Copy safe fields
-        safe_fields = [
-            "companyName", "company_name", "businessName", "business_name",
-            "email", "phone", "address", "website",
-            "currency", "language", "timezone",
-            "serviceRates", "service_rates", "rates", "pricing",
-            "services", "specializations",
-            "taxRate", "tax_rate", "vatNumber", "vat_number",
-        ]
+        # Handle nested 'profile' object
+        if "profile" in settings and isinstance(settings["profile"], dict):
+            profile = settings["profile"]
+            sanitized["profile"] = {}
+            for field in ["full_name", "name", "email", "phone", "position", "language", "timezone", "avatar"]:
+                if field in profile and profile[field]:
+                    sanitized["profile"][field] = profile[field]
         
-        for field in safe_fields:
-            if field in settings and settings[field]:
-                sanitized[field] = settings[field]
+        # Handle nested 'company' object
+        if "company" in settings and isinstance(settings["company"], dict):
+            company = settings["company"]
+            sanitized["company"] = {}
+            
+            # Safe company fields
+            safe_company_fields = [
+                "company_name", "name", "legal_form", "siren", "siret", "vat_number",
+                "street_address", "zip_code", "city", "phone", "email", "website",
+                "rcs", "ape", "liability_insurance", "default_vat_rate",
+                "payment_terms", "iban", "bic"
+            ]
+            
+            for field in safe_company_fields:
+                if field in company and company[field]:
+                    sanitized["company"][field] = company[field]
+            
+            # Handle service rates inside company
+            for rates_field in ["serviceRates", "service_rates", "rates", "pricing", "hourly_rates", "hourlyRates"]:
+                if rates_field in company and company[rates_field]:
+                    sanitized["serviceRates"] = company[rates_field]
+                    break
         
         # Handle integrations - only show status, not tokens/secrets
         if "integrations" in settings:
             sanitized["integrations"] = {}
-            for integration_name, integration_data in settings.get("integrations", {}).items():
-                if isinstance(integration_data, dict):
-                    sanitized["integrations"][integration_name] = {
-                        "status": integration_data.get("status", "not_configured"),
-                        "auto_sync": integration_data.get("auto_sync", False),
-                        "sync_direction": integration_data.get("sync_direction"),
-                    }
-                    # Add error message if present
-                    if integration_data.get("error_message"):
-                        sanitized["integrations"][integration_name]["error_message"] = integration_data.get("error_message")
+            integrations = settings["integrations"]
+            
+            if isinstance(integrations, dict):
+                for integration_name, integration_data in integrations.items():
+                    if isinstance(integration_data, dict):
+                        # Only include safe fields, exclude tokens and secrets
+                        sanitized["integrations"][integration_name] = {
+                            "status": integration_data.get("status", "not_configured"),
+                            "auto_sync": integration_data.get("auto_sync", False),
+                            "sync_direction": integration_data.get("sync_direction"),
+                            "last_sync": integration_data.get("last_sync"),
+                        }
+                        # Add calendar_id for google_calendar (it's useful info)
+                        if integration_name == "google_calendar" and integration_data.get("calendar_id"):
+                            sanitized["integrations"][integration_name]["calendar_id"] = integration_data.get("calendar_id")
+                        # Add error message if present
+                        if integration_data.get("error_message"):
+                            sanitized["integrations"][integration_name]["error_message"] = integration_data.get("error_message")
+            elif isinstance(integrations, list):
+                for integration_name in integrations:
+                    sanitized["integrations"][integration_name] = {"status": "configured"}
         
-        # Handle service rates specifically
-        if "serviceRates" in settings:
-            sanitized["serviceRates"] = settings["serviceRates"]
-        elif "service_rates" in settings:
-            sanitized["serviceRates"] = settings["service_rates"]
-        elif "rates" in settings:
-            sanitized["serviceRates"] = settings["rates"]
+        # Handle security settings (only non-sensitive)
+        if "security" in settings and isinstance(settings["security"], dict):
+            security = settings["security"]
+            sanitized["security"] = {
+                "two_factor_enabled": security.get("two_factor_enabled", False),
+                "session_timeout": security.get("session_timeout", 30)
+            }
+        
+        # Handle service rates at top level (fallback for different schema)
+        if "serviceRates" not in sanitized:
+            for rates_field in ["serviceRates", "service_rates", "rates", "pricing"]:
+                if rates_field in settings and settings[rates_field]:
+                    sanitized["serviceRates"] = settings[rates_field]
+                    break
             
         return sanitized
     
@@ -1312,11 +1351,12 @@ Extract ALL available data. Return ONLY valid JSON, no explanations."""
 RULES:
 - Be conversational and helpful
 - Answer ONLY the specific question asked
-- If asked about rates, list the relevant service rates
-- If asked about integrations, explain the connection status
-- If asked about company info, provide the relevant details
+- If asked about rates but no rates are configured, politely say "I don't see any service rates configured in your settings. You can add them in the Settings page."
+- If asked about integrations, explain the connection status clearly (connected/not configured)
+- If asked about company info, provide the relevant details from the data
 - Keep responses concise but complete
 - Use currency symbol € for amounts unless specified otherwise in settings
+- If a specific piece of information is not available, say it's not configured yet
 - {"Respond in French" if language == "fr" else "Respond in English"}
 
 USER SETTINGS DATA:
@@ -1338,8 +1378,8 @@ USER SETTINGS DATA:
         except Exception as e:
             self.logger.error(f"Error generating settings response: {e}")
             # Fallback: return basic info
-            company = settings.get("companyName") or settings.get("company_name") or "Your company"
-            return f"Here's your profile: Company: {company}. Use the settings page to view all details."
+            company_name = settings.get("company", {}).get("company_name") or settings.get("companyName") or "Your company"
+            return f"Here's your profile: Company: {company_name}. Use the settings page to view all details."
     
     async def _generate_human_friendly_message(self, intent: Intent, data: Dict[str, Any], language: str) -> str:
         """Generate a human-friendly summary message from retrieved data"""
