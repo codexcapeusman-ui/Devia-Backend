@@ -33,6 +33,7 @@ from models.chats import (
 class Intent(str, Enum):
     """Supported intents for AI agent - Order matters for priority"""
     CHIT_CHAT = "chit_chat"
+    GENERAL_INFO = "general_info"  # General questions, calculations, information requests
     MANUAL_TASK = "manual_task"
     CUSTOMER = "customer"
     INVOICE = "invoice"
@@ -346,6 +347,12 @@ class UnifiedAgentService:
                     await self._close_conversation(user_id)
                     return chit_chat_response
 
+                # Handle GENERAL_INFO (informational questions, calculations, etc.)
+                if intent == Intent.GENERAL_INFO:
+                    general_info_response = await self._generate_general_info_response(prompt, language)
+                    await self._close_conversation(user_id)
+                    return general_info_response
+
                 # Handle "get all" queries
                 if operation == Operation.GET and self._is_get_all_query(prompt):
                     conversation["state"] = ConversationState.RESPONSE_GENERATION
@@ -516,27 +523,30 @@ User prompt: "{prompt}"
 
 INTENTS (in priority order):
 1. chit_chat - Greetings, thanks, casual talk (hi, hello, thanks, bye, how are you)
-2. manual_task - Personal tasks with colors (red task, blue reminder, planning)
-3. customer - Client/customer management (add client, show customers)
-4. invoice - Billing (create invoice, show invoices)
-5. quote - Estimates (generate quote, show quotes)
-6. expense - Cost tracking (add expense, show expenses)
-7. job - Client work appointments (schedule job for client X)
+2. general_info - INFORMATIONAL QUESTIONS that don't require creating records:
+   - Price/cost calculations ("how much would X cost?", "calculate cost of...")
+   - General questions about services ("what's the price for...", "how much for...")
+   - Estimation requests without client info ("estimate for 60m² apartment")
+   - Information lookup ("what are your rates?", "how long does X take?")
+3. manual_task - Personal tasks with colors (red task, blue reminder, planning)
+4. customer - Client/customer management (add client, show customers)
+5. invoice - Billing (create invoice, show invoices) - ONLY when user wants to CREATE a record
+6. quote - Estimates for SPECIFIC CLIENTS (create quote FOR client X)
+7. expense - Cost tracking (add expense, show expenses)
+8. job - Client work appointments (schedule job for client X)
 
 OPERATIONS:
 - get: Retrieve/show/list/display data
 - create: Add/make/schedule/generate new
 - update: Modify/change/edit existing
 - delete: Remove/cancel existing
-- unknown: For chit-chat
+- unknown: For chit-chat and general_info
 
-RULES:
+CRITICAL RULES:
+- If asking "how much", "calculate", "estimate" WITHOUT a specific client name = general_info
+- If asking to CREATE quote/invoice FOR a specific person/company = quote/invoice
+- General cost questions = general_info (NOT quote or invoice)
 - Color words (red, blue, green) = manual_task
-- "task" without client name = manual_task
-- Specific client name mentioned = job
-- "invoice"/"bill" = invoice
-- "quote"/"estimate" = quote
-- "expense"/"cost" = expense
 - "client"/"customer" = customer
 
 Return: {{"intent": "...", "operation": "...", "confidence": 0.0-1.0, "reasoning": "..."}}"""
@@ -1436,6 +1446,68 @@ Recent tasks: {', '.join([t.get('title', 'Untitled') for t in items[:3]])}"""
             "action": "chit_chat",
             "intent": "chit_chat"
         }
+
+    async def _generate_general_info_response(self, prompt: str, language: str) -> Dict[str, Any]:
+        """Generate informational response for general queries (calculations, estimates, info requests)"""
+        try:
+            system_prompt = f"""You are a helpful business assistant for a contractor/tradesperson management app.
+            
+The user is asking a general informational question - they want information, calculations, or estimates.
+They are NOT trying to create a quote, invoice, or any record.
+
+CONTEXT:
+- You help with electrical work, plumbing, construction, and general contracting
+- You know typical pricing for common services in France/Europe
+- Currency is € (Euro)
+
+GUIDELINES:
+- Provide helpful, informative answers
+- Give realistic price ranges for services
+- Include breakdown of costs when estimating
+- Mention factors that can affect the price
+- Be conversational and helpful
+- {"Respond in French" if language == "fr" else "Respond in English"}
+- If they want to create an actual quote/invoice, suggest they say "create a quote for [client name]"
+
+DO NOT ask for customer details - this is just an informational query."""
+
+            user_prompt = f"User question: {prompt}"
+            
+            result = await self.sk_service.kernel.invoke_prompt(
+                user_prompt,
+                system_message=system_prompt,
+                settings=OpenAIChatPromptExecutionSettings(
+                    max_tokens=500,
+                    temperature=0.7
+                )
+            )
+            
+            response_message = str(result).strip()
+            
+            return {
+                "success": True,
+                "message": response_message,
+                "action": "general_info",
+                "intent": "general_info",
+                "suggestions": [
+                    "Create a quote for this",
+                    "Create an invoice",
+                    "Show my quotes"
+                ]
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Error generating general info response: {e}")
+            fallback = {
+                "en": "I can help with pricing estimates! For a complete electrical installation in a 60m² apartment, costs typically range from €3,000 to €6,000 depending on the scope. Would you like me to create a quote for a specific client?",
+                "fr": "Je peux vous aider avec les estimations de prix ! Pour une installation électrique complète dans un appartement de 60m², les coûts varient généralement entre 3 000 € et 6 000 € selon l'étendue des travaux. Voulez-vous que je crée un devis pour un client spécifique ?"
+            }
+            return {
+                "success": True,
+                "message": fallback.get(language, fallback["en"]),
+                "action": "general_info",
+                "intent": "general_info"
+            }
 
     def _create_clarification_response(self, conversation: Dict[str, Any], language: str) -> Dict[str, Any]:
         """Create response asking for intent clarification"""
