@@ -23,7 +23,7 @@ from tools.job_tools import JobTools
 from tools.expense_tools import ExpenseTools
 from tools.manual_task_tools import ManualTaskTools
 from config.settings import Settings
-from database import get_conversations_collection
+from database import get_conversations_collection, get_settings_collection
 from models.chats import (
     ChatMessage, Conversation, ConversationCreate, 
     MessageRole, ConversationState as DBConversationState
@@ -33,6 +33,7 @@ from models.chats import (
 class Intent(str, Enum):
     """Supported intents for AI agent - Order matters for priority"""
     CHIT_CHAT = "chit_chat"
+    USER_SETTINGS = "user_settings"  # Profile, company info, rates, integrations
     GENERAL_INFO = "general_info"  # General questions, calculations, information requests
     MANUAL_TASK = "manual_task"
     CUSTOMER = "customer"
@@ -347,6 +348,14 @@ class UnifiedAgentService:
                     await self._close_conversation(user_id)
                     return chit_chat_response
 
+                # Handle USER_SETTINGS (profile, company info, rates, integrations)
+                if intent == Intent.USER_SETTINGS:
+                    # Pass original prompt in data for context
+                    conversation["data"]["_original_prompt"] = prompt
+                    user_settings_response = await self._handle_user_settings_query(user_id, conversation["data"], language)
+                    await self._close_conversation(user_id)
+                    return user_settings_response
+
                 # Handle GENERAL_INFO (informational questions, calculations, etc.)
                 if intent == Intent.GENERAL_INFO:
                     general_info_response = await self._generate_general_info_response(prompt, language)
@@ -499,10 +508,36 @@ class UnifiedAgentService:
 
     # ==================== INTENT DETECTION ====================
     
+    def _extract_person_name_from_query(self, prompt: str) -> Optional[str]:
+        """Extract person name from person-related queries like 'who is Eva Malik'"""
+        prompt_lower = prompt.strip().lower()
+        prompt_clean = prompt.strip()  # Keep original case for name
+        
+        # Patterns with named groups to extract the person name
+        patterns_with_groups = [
+            (r"^(?:who|how)\s+(?:is|are|was)\s+(.+?)[\s!.?]*$", 1),
+            (r"^tell\s+me\s+about\s+(.+?)[\s!.?]*$", 1),
+            (r"^(?:show|get|find)\s+(?:me\s+)?(?:info|information|details?)\s+(?:about|on|for)\s+(.+?)[\s!.?]*$", 1),
+            (r"^(?:what|who)\s+about\s+(.+?)[\s!.?]*$", 1),
+            (r"^(?:do\s+(?:you|we)\s+have|is\s+there)\s+(?:a\s+)?(?:client|customer)?\s*(?:named|called)?\s*(.+?)[\s!.?]*$", 1),
+            (r"^(?:find|search|look\s*up)\s+(.+?)[\s!.?]*$", 1),
+        ]
+        
+        for pattern, group_idx in patterns_with_groups:
+            match = re.search(pattern, prompt_clean, re.IGNORECASE)
+            if match:
+                name = match.group(group_idx).strip()
+                # Clean up common words that shouldn't be part of name
+                name = re.sub(r'\b(client|customer|named|called)\b', '', name, flags=re.IGNORECASE).strip()
+                if name and len(name) > 1:
+                    self.logger.info(f"Extracted person name from query: '{name}'")
+                    return name
+        return None
+    
     async def _detect_intent(self, prompt: str, language: str) -> Tuple[Intent, Operation, float]:
         """Detect user intent from the prompt using AI with improved accuracy"""
         
-        # Quick regex check for chit-chat
+        # Quick regex check for chit-chat (ONLY simple greetings without names)
         chit_chat_patterns = [
             r"^(hi|hello|hey|bonjour|salut|coucou|good\s*(morning|afternoon|evening)|what'?s?\s*up)[\s!.?]*$",
             r"^(thanks?|thank\s*you|merci|awesome|great|perfect|ok|okay|cool|nice|got\s*it)[\s!.?]*$",
@@ -512,6 +547,32 @@ class UnifiedAgentService:
         ]
         
         prompt_lower = prompt.strip().lower()
+        
+        # Check for USER SETTINGS / PROFILE queries FIRST
+        user_settings_patterns = [
+            r"\b(my|our)\s+(company|business|profile|settings?|rates?|pricing|integrations?)\b",
+            r"\b(show|get|what|tell)\s+(me\s+)?(my|our|about\s+my)\s+",
+            r"\b(standard|hourly|service)\s+rates?\b",
+            r"\bmy\s+(plumbing|electrical|carpentry|painting|hvac|roofing)\s+(rates?|prices?)\b",
+            r"\b(google\s*calendar|stripe|payment)\s+(integration|status|connected|setup)\b",
+            r"\bintegration\s+(status|settings?)\b",
+            r"\b(am\s+i|are\s+we)\s+(connected|integrated|synced)\b",
+            r"\bwhat\s+is\s+(my|our)\s+(company|business)\s*(name)?\b",
+            r"\bmy\s+(email|phone|address|contact)\b",
+        ]
+        
+        for pattern in user_settings_patterns:
+            if re.search(pattern, prompt_lower, re.IGNORECASE):
+                self.logger.info(f"Detected user settings query pattern")
+                return Intent.USER_SETTINGS, Operation.GET, 0.90
+        
+        # Check for person name queries - these should check database
+        person_name = self._extract_person_name_from_query(prompt)
+        if person_name:
+            # This looks like a person/entity query - treat as CUSTOMER GET
+            self.logger.info(f"Detected person query for '{person_name}', treating as customer lookup")
+            return Intent.CUSTOMER, Operation.GET, 0.85
+        
         for pattern in chit_chat_patterns:
             if re.search(pattern, prompt_lower, re.IGNORECASE):
                 return Intent.CHIT_CHAT, Operation.UNKNOWN, 0.95
@@ -521,28 +582,41 @@ class UnifiedAgentService:
 
 User prompt: "{prompt}"
 
+IMPORTANT: This is a BUSINESS MANAGEMENT APP for invoices, quotes, clients, jobs, and expenses.
+It is NOT a general knowledge platform. All queries should be interpreted in business context.
+
 INTENTS (in priority order):
-1. chit_chat - Greetings, thanks, casual talk (hi, hello, thanks, bye, how are you)
-2. general_info - INFORMATIONAL QUESTIONS that don't require creating records:
+1. chit_chat - ONLY simple greetings without names (hi, hello, thanks, bye)
+2. user_settings - Questions about MY/OUR profile, company, rates, integrations:
+   - "What is my company name?" → user_settings
+   - "Show me my standard rates" → user_settings
+   - "What are my plumbing rates?" → user_settings
+   - "Is Google Calendar connected?" → user_settings
+   - "Show my integrations" → user_settings
+   - "What's my business address?" → user_settings
+3. customer - ANY query mentioning a person's name should check if they're a client:
+   - "who is [Name]" → Look up client named [Name]
+   - "how is [Name]" → Look up client named [Name]  
+   - "tell me about [Name]" → Look up client
+   - "show me [Name]'s info" → Look up client
+4. general_info - ONLY for service/price calculations WITHOUT person names:
    - Price/cost calculations ("how much would X cost?", "calculate cost of...")
-   - General questions about services ("what's the price for...", "how much for...")
-   - Estimation requests without client info ("estimate for 60m² apartment")
-   - Information lookup ("what are your rates?", "how long does X take?")
-3. manual_task - Personal tasks with colors (red task, blue reminder, planning)
-4. customer - Client/customer management (add client, show customers)
-5. invoice - Billing (create invoice, show invoices) - ONLY when user wants to CREATE a record
-6. quote - Estimates for SPECIFIC CLIENTS (create quote FOR client X)
-7. expense - Cost tracking (add expense, show expenses)
-8. job - Client work appointments (schedule job for client X)
+   - Estimation requests ("estimate for 60m² apartment")
+5. manual_task - Personal tasks with colors (red task, blue reminder, planning)
+6. invoice - Billing (create invoice, show invoices) - ONLY when user wants to CREATE a record
+7. quote - Estimates for SPECIFIC CLIENTS (create quote FOR client X)
+8. expense - Cost tracking (add expense, show expenses)
+9. job - Client work appointments (schedule job for client X)
 
 OPERATIONS:
 - get: Retrieve/show/list/display data
 - create: Add/make/schedule/generate new
 - update: Modify/change/edit existing
 - delete: Remove/cancel existing
-- unknown: For chit-chat and general_info
+- unknown: For chit-chat and user_settings
 
 CRITICAL RULES:
+- Questions about "my rates", "my company", "my integrations" = user_settings
 - If asking "how much", "calculate", "estimate" WITHOUT a specific client name = general_info
 - If asking to CREATE quote/invoice FOR a specific person/company = quote/invoice
 - General cost questions = general_info (NOT quote or invoice)
@@ -911,6 +985,15 @@ Extract ALL available data. Return ONLY valid JSON, no explanations."""
     async def _extract_get_query_params(self, prompt: str, intent: Intent, language: str) -> Dict[str, Any]:
         """Extract search parameters for GET operations"""
         try:
+            # First try to extract person name directly from query (for person queries)
+            person_name = self._extract_person_name_from_query(prompt)
+            if person_name and intent == Intent.CUSTOMER:
+                self.logger.info(f"Using directly extracted person name for search: '{person_name}'")
+                return {
+                    "extracted_data": {"name": person_name, "search_term": person_name},
+                    "confidence": 0.95
+                }
+            
             extraction_prompt = self._get_extraction_prompt_for_get(intent)
             
             result = await self.sk_service.kernel.invoke_prompt(
@@ -1044,6 +1127,10 @@ Extract ALL available data. Return ONLY valid JSON, no explanations."""
     ) -> Dict[str, Any]:
         """Generate final response - same structure as before for frontend compatibility"""
         
+        # Handle USER_SETTINGS queries
+        if intent == Intent.USER_SETTINGS:
+            return await self._handle_user_settings_query(user_id, data, language)
+        
         # Handle GET operations
         if operation == Operation.GET:
             return await self._handle_get_operation(intent, data, user_id, language)
@@ -1114,6 +1201,9 @@ Extract ALL available data. Return ONLY valid JSON, no explanations."""
                     except:
                         result = {"raw": result}
                 
+                # Add search context to result for better messages
+                result["_search_term"] = search_params.get("search", "") or search_params.get("client_name", "")
+                
                 # Generate human-friendly message from the data
                 human_message = await self._generate_human_friendly_message(intent, result, language)
                 
@@ -1130,6 +1220,126 @@ Extract ALL available data. Return ONLY valid JSON, no explanations."""
         except Exception as e:
             self.logger.error(f"GET operation failed: {e}")
             return {"success": False, "message": f"Failed to retrieve: {str(e)}"}
+
+    async def _handle_user_settings_query(self, user_id: str, data: Dict[str, Any], language: str) -> Dict[str, Any]:
+        """Handle queries about user settings, profile, company info, rates, integrations"""
+        try:
+            # Fetch user settings from database
+            settings_collection = get_settings_collection()
+            user_settings = await settings_collection.find_one({"userId": user_id})
+            
+            if not user_settings:
+                no_settings_msg = {
+                    "en": "I couldn't find your profile settings. It seems your account settings haven't been configured yet. Would you like to set them up?",
+                    "fr": "Je n'ai pas trouvé vos paramètres de profil. Il semble que les paramètres de votre compte n'ont pas encore été configurés. Voulez-vous les configurer?"
+                }
+                return {
+                    "success": True,
+                    "message": no_settings_msg.get(language, no_settings_msg["en"]),
+                    "intent": "user_settings",
+                    "operation": "get",
+                    "timestamp": datetime.now().isoformat()
+                }
+            
+            # Clean up settings for display (remove sensitive data)
+            display_settings = self._sanitize_settings_for_display(user_settings)
+            
+            # Get the original user query from data
+            original_prompt = data.get("_original_prompt", "")
+            
+            # Generate human-friendly response using AI
+            message = await self._generate_settings_response(display_settings, original_prompt, language)
+            
+            return {
+                "success": True,
+                "message": message,
+                "intent": "user_settings",
+                "operation": "get",
+                "timestamp": datetime.now().isoformat()
+            }
+            
+        except Exception as e:
+            self.logger.error(f"User settings query failed: {e}")
+            return {"success": False, "message": f"Failed to retrieve settings: {str(e)}"}
+    
+    def _sanitize_settings_for_display(self, settings: Dict[str, Any]) -> Dict[str, Any]:
+        """Remove sensitive data from settings before sending to AI"""
+        sanitized = {}
+        
+        # Copy safe fields
+        safe_fields = [
+            "companyName", "company_name", "businessName", "business_name",
+            "email", "phone", "address", "website",
+            "currency", "language", "timezone",
+            "serviceRates", "service_rates", "rates", "pricing",
+            "services", "specializations",
+            "taxRate", "tax_rate", "vatNumber", "vat_number",
+        ]
+        
+        for field in safe_fields:
+            if field in settings and settings[field]:
+                sanitized[field] = settings[field]
+        
+        # Handle integrations - only show status, not tokens/secrets
+        if "integrations" in settings:
+            sanitized["integrations"] = {}
+            for integration_name, integration_data in settings.get("integrations", {}).items():
+                if isinstance(integration_data, dict):
+                    sanitized["integrations"][integration_name] = {
+                        "status": integration_data.get("status", "not_configured"),
+                        "auto_sync": integration_data.get("auto_sync", False),
+                        "sync_direction": integration_data.get("sync_direction"),
+                    }
+                    # Add error message if present
+                    if integration_data.get("error_message"):
+                        sanitized["integrations"][integration_name]["error_message"] = integration_data.get("error_message")
+        
+        # Handle service rates specifically
+        if "serviceRates" in settings:
+            sanitized["serviceRates"] = settings["serviceRates"]
+        elif "service_rates" in settings:
+            sanitized["serviceRates"] = settings["service_rates"]
+        elif "rates" in settings:
+            sanitized["serviceRates"] = settings["rates"]
+            
+        return sanitized
+    
+    async def _generate_settings_response(self, settings: Dict[str, Any], original_prompt: str, language: str) -> str:
+        """Generate a human-friendly response about user settings"""
+        try:
+            system_prompt = f"""You are a helpful business assistant. Answer the user's question about their profile/settings based on the provided data.
+
+RULES:
+- Be conversational and helpful
+- Answer ONLY the specific question asked
+- If asked about rates, list the relevant service rates
+- If asked about integrations, explain the connection status
+- If asked about company info, provide the relevant details
+- Keep responses concise but complete
+- Use currency symbol € for amounts unless specified otherwise in settings
+- {"Respond in French" if language == "fr" else "Respond in English"}
+
+USER SETTINGS DATA:
+{json.dumps(settings, indent=2, default=str)}"""
+
+            user_prompt = f"User question: {original_prompt}" if original_prompt else "Summarize my profile and settings."
+            
+            result = await self.sk_service.kernel.invoke_prompt(
+                user_prompt,
+                system_message=system_prompt,
+                settings=OpenAIChatPromptExecutionSettings(
+                    max_tokens=400,
+                    temperature=0.7
+                )
+            )
+            
+            return str(result).strip()
+            
+        except Exception as e:
+            self.logger.error(f"Error generating settings response: {e}")
+            # Fallback: return basic info
+            company = settings.get("companyName") or settings.get("company_name") or "Your company"
+            return f"Here's your profile: Company: {company}. Use the settings page to view all details."
     
     async def _generate_human_friendly_message(self, intent: Intent, data: Dict[str, Any], language: str) -> str:
         """Generate a human-friendly summary message from retrieved data"""
@@ -1138,10 +1348,11 @@ Extract ALL available data. Return ONLY valid JSON, no explanations."""
             entity_key = self._get_entity_key(intent)
             items = data.get(entity_key, [])
             total = data.get("total", len(items))
+            search_term = data.get("_search_term", "")
             
             # If no data found
             if total == 0 or not items:
-                return self._get_no_data_message(intent, language)
+                return self._get_no_data_message(intent, language, search_term)
             
             # Build context for LLM
             summary_context = self._build_summary_context(intent, items, total)
@@ -1189,8 +1400,29 @@ RULES:
         }
         return key_map.get(intent, "items")
     
-    def _get_no_data_message(self, intent: Intent, language: str) -> str:
+    def _get_no_data_message(self, intent: Intent, language: str, search_term: str = "") -> str:
         """Get message when no data is found"""
+        
+        # If a specific name was searched, provide a personalized message
+        if search_term and intent == Intent.CUSTOMER:
+            if language == "fr":
+                return f"Je n'ai trouvé aucun client nommé '{search_term}' dans vos dossiers. Voulez-vous ajouter {search_term} comme nouveau client?"
+            return f"I couldn't find a client named '{search_term}' in your records. Would you like to add {search_term} as a new client?"
+        
+        if search_term:
+            entity_names = {
+                Intent.INVOICE: {"en": "invoices", "fr": "factures"},
+                Intent.QUOTE: {"en": "quotes", "fr": "devis"},
+                Intent.CUSTOMER: {"en": "clients", "fr": "clients"},
+                Intent.EXPENSE: {"en": "expenses", "fr": "dépenses"},
+                Intent.JOB: {"en": "jobs", "fr": "travaux"},
+                Intent.MANUAL_TASK: {"en": "tasks", "fr": "tâches"}
+            }
+            entity = entity_names.get(intent, {}).get(language, entity_names.get(intent, {}).get("en", "records"))
+            if language == "fr":
+                return f"Je n'ai trouvé aucun {entity} correspondant à '{search_term}'. Voulez-vous essayer une autre recherche?"
+            return f"I couldn't find any {entity} matching '{search_term}'. Would you like to try a different search?"
+        
         messages = {
             Intent.INVOICE: {
                 "en": "No invoices found matching your criteria. Would you like to create a new invoice?",
